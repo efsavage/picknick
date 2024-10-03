@@ -1,6 +1,7 @@
 package com.efsavage.picknick;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.DoubleBinding;
 import javafx.geometry.Insets;
@@ -34,6 +35,8 @@ public class Picknick extends Application {
     private int currentIndex = 0;
     private ImageView imageView = new ImageView();
     private File tempImageFile;
+    private File nextTempImageFile;
+    private Image preloadedNextImage;
     private Stage primaryStage;
     private boolean isZoomedIn = false;
     private double zoomScale = 2.0; // Zoom scale factor
@@ -214,9 +217,17 @@ public class Picknick extends Application {
             File nefFile = imageFiles.get(currentIndex);
             System.out.println("Displaying image: " + nefFile.getName());
             try {
-                tempImageFile = convertNEFToJPEG(nefFile);
-                Image image = new Image(tempImageFile.toURI().toString());
-                imageView.setImage(image);
+                if (preloadedNextImage != null && tempImageFile != null && tempImageFile.exists() && tempImageFile.equals(nextTempImageFile)) {
+                    // Use preloaded image
+                    imageView.setImage(preloadedNextImage);
+                    System.out.println("Used preloaded image for: " + nefFile.getName());
+                } else {
+                    // Load image normally
+                    tempImageFile = convertNEFToJPEG(nefFile);
+                    Image image = new Image(tempImageFile.toURI().toString());
+                    imageView.setImage(image);
+                    System.out.println("Loaded image normally for: " + nefFile.getName());
+                }
 
                 // Reset zoom state
                 isZoomedIn = false;
@@ -229,12 +240,17 @@ public class Picknick extends Application {
                 } else {
                     updateTitle(nefFile.getName());
                 }
+
+                // Preload next image
+                preloadNextImage();
+
             } catch (IOException e) {
                 e.printStackTrace();
                 System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
                 moveToDirectory(nefFile, skipDirectory);
                 deleteTempImageFile();
                 imageFiles.remove(currentIndex);
+                // Do not adjust currentIndex here
                 showImage();
             }
         } else {
@@ -250,6 +266,48 @@ public class Picknick extends Application {
                 // Process 'maybe' directory
                 processDirectory(maybeDirectory);
             }
+        }
+    }
+
+    private void preloadNextImage() {
+        int nextIndex = currentIndex + 1;
+        if (nextIndex < imageFiles.size()) {
+            File nextNefFile = imageFiles.get(nextIndex);
+            System.out.println("Preloading next image: " + nextNefFile.getName());
+
+            // Run in background thread to avoid blocking UI
+            new Thread(() -> {
+                try {
+                    File tempFile = convertNEFToJPEG(nextNefFile);
+                    Image image = new Image(tempFile.toURI().toString());
+
+                    // Assign preloaded data on the JavaFX Application Thread
+                    Platform.runLater(() -> {
+                        // Check if currentIndex hasn't changed since we started preloading
+                        if (currentIndex + 1 == nextIndex) {
+                            // Clean up previous preloaded image
+                            if (nextTempImageFile != null && nextTempImageFile.exists()) {
+                                nextTempImageFile.delete();
+                            }
+                            preloadedNextImage = image;
+                            nextTempImageFile = tempFile;
+                            System.out.println("Preloaded image: " + nextNefFile.getName());
+                        } else {
+                            // Index has changed; discard this preloaded image
+                            tempFile.delete();
+                            System.out.println("Discarded preloaded image: " + nextNefFile.getName());
+                        }
+                    });
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    System.out.println("Error preloading NEF to JPEG: " + nextNefFile.getName());
+                }
+            }).start();
+        } else {
+            // No more images to preload
+            preloadedNextImage = null;
+            nextTempImageFile = null;
+            System.out.println("No more images to preload.");
         }
     }
 
@@ -366,6 +424,7 @@ public class Picknick extends Application {
         moveToDirectory(nefFile, keepDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
+        // Do not delete preloaded image here
         showImage();
     }
 
@@ -375,6 +434,7 @@ public class Picknick extends Application {
         moveToDirectory(nefFile, skipDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
+        // Do not delete preloaded image here
         showImage();
     }
 
@@ -384,6 +444,7 @@ public class Picknick extends Application {
         moveToDirectory(nefFile, maybeDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
+        // Do not delete preloaded image here
         showImage();
     }
 
@@ -404,17 +465,20 @@ public class Picknick extends Application {
             tempImageFile.delete();
             System.out.println("Deleted temporary image file: " + tempImageFile.getAbsolutePath());
         }
+        tempImageFile = null;
     }
 
     private void updateTitle(String title) {
-        primaryStage.setTitle("Picknick - " + title);
+        Platform.runLater(() -> primaryStage.setTitle("Picknick - " + title));
     }
 
     private void showAlert(String title, String message) {
-        Alert alert = new Alert(Alert.AlertType.INFORMATION, message);
-        alert.setHeaderText(null);
-        alert.setTitle(title);
-        alert.showAndWait();
+        Platform.runLater(() -> {
+            Alert alert = new Alert(Alert.AlertType.INFORMATION, message);
+            alert.setHeaderText(null);
+            alert.setTitle(title);
+            alert.showAndWait();
+        });
     }
 
     private void cleanupEmptyDirectories() {
