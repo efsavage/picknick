@@ -81,6 +81,8 @@ public class Picknick extends Application {
                 skipImage();
             } else if (event.getCode() == KeyCode.M) {
                 maybeImage();
+            } else if (event.getCode() == KeyCode.F11) {
+                toggleFullScreen();
             }
         });
 
@@ -122,6 +124,12 @@ public class Picknick extends Application {
         imageView.setPreserveRatio(true);
 
         primaryStage.show();
+    }
+
+    private void toggleFullScreen() {
+        boolean isFullScreen = primaryStage.isFullScreen();
+        primaryStage.setFullScreen(!isFullScreen);
+        System.out.println("Fullscreen mode toggled to: " + (!isFullScreen));
     }
 
     private void selectInitialDirectory() {
