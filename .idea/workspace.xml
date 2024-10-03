@@ -4,9 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Preload the next image in a background thread">
+    <list default="true" id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Preload the next 10 images">
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/efsavage/picknick/Picknick.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/efsavage/picknick/Picknick.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -16,6 +16,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;efsavage&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/efsavage/picknick&quot;,
+    &quot;accountId&quot;: &quot;cd2f7f0e-fe05-4813-9759-6b57b00f8ed9&quot;
+  }
+}</component>
   <component name="MavenImportPreferences">
     <option name="generalSettings">
       <MavenGeneralSettings>
@@ -24,9 +36,9 @@
     </option>
   </component>
   <component name="ProjectColorInfo">{
-  &quot;associatedIndex&quot;: 1
+  &quot;associatedIndex&quot;: 2
 }</component>
-  <component name="ProjectId" id="2muDsbwRdQ1H59lmsz9BT0WYHkg" />
+  <component name="ProjectId" id="2mua3uZ17lPV7IoT1tIs9pnOSF6" />
   <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -34,26 +46,18 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
-    "Application.HelloApplication.executor": "Run",
-    "Application.NEFImageReviewer.executor": "Run",
     "Application.Picknick.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "main",
+    "ignore.virus.scanning.warn.message": "true",
     "kotlin-language-version-configured": "true",
     "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
-  <component name="RecentsManager">
-    <key name="MoveClassesOrPackagesDialog.RECENTS_KEY">
-      <recent name="com.efsavage.picknick" />
-    </key>
-  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -65,84 +69,17 @@
   <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
-      <changelist id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="" />
-      <created>1727917794665</created>
+      <changelist id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Preload the next 10 images" />
+      <created>1727928720230</created>
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
-      <updated>1727917794665</updated>
-      <workItem from="1727917795664" duration="355000" />
-      <workItem from="1727918159979" duration="549000" />
-      <workItem from="1727918718221" duration="8745000" />
+      <updated>1727928720230</updated>
+      <workItem from="1727928721435" duration="309000" />
+      <workItem from="1727977686073" duration="129000" />
     </task>
-    <task id="LOCAL-00001" summary="First version">
-      <option name="closed" value="true" />
-      <created>1727924255068</created>
-      <option name="number" value="00001" />
-      <option name="presentableId" value="LOCAL-00001" />
-      <option name="project" value="LOCAL" />
-      <updated>1727924255068</updated>
-    </task>
-    <task id="LOCAL-00002" summary="First version">
-      <option name="closed" value="true" />
-      <created>1727924541143</created>
-      <option name="number" value="00002" />
-      <option name="presentableId" value="LOCAL-00002" />
-      <option name="project" value="LOCAL" />
-      <updated>1727924541143</updated>
-    </task>
-    <task id="LOCAL-00003" summary="Add full screen">
-      <option name="closed" value="true" />
-      <created>1727924548172</created>
-      <option name="number" value="00003" />
-      <option name="presentableId" value="LOCAL-00003" />
-      <option name="project" value="LOCAL" />
-      <updated>1727924548172</updated>
-    </task>
-    <task id="LOCAL-00004" summary="Move buttons to a toolbar">
-      <option name="closed" value="true" />
-      <created>1727924736480</created>
-      <option name="number" value="00004" />
-      <option name="presentableId" value="LOCAL-00004" />
-      <option name="project" value="LOCAL" />
-      <updated>1727924736480</updated>
-    </task>
-    <task id="LOCAL-00005" summary="Show date/time in toolbar">
-      <option name="closed" value="true" />
-      <created>1727925687483</created>
-      <option name="number" value="00005" />
-      <option name="presentableId" value="LOCAL-00005" />
-      <option name="project" value="LOCAL" />
-      <updated>1727925687483</updated>
-    </task>
-    <task id="LOCAL-00006" summary="Preload the next image">
-      <option name="closed" value="true" />
-      <created>1727926423420</created>
-      <option name="number" value="00006" />
-      <option name="presentableId" value="LOCAL-00006" />
-      <option name="project" value="LOCAL" />
-      <updated>1727926423420</updated>
-    </task>
-    <task id="LOCAL-00007" summary="Preload the next image in a background thread">
-      <option name="closed" value="true" />
-      <created>1727926565591</created>
-      <option name="number" value="00007" />
-      <option name="presentableId" value="LOCAL-00007" />
-      <option name="project" value="LOCAL" />
-      <updated>1727926565591</updated>
-    </task>
-    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
-  </component>
-  <component name="VcsManagerConfiguration">
-    <MESSAGE value="First version" />
-    <MESSAGE value="Add full screen" />
-    <MESSAGE value="Move buttons to a toolbar" />
-    <MESSAGE value="Show date/time in toolbar" />
-    <MESSAGE value="Preload the next image" />
-    <MESSAGE value="Preload the next image in a background thread" />
-    <option name="LAST_COMMIT_MESSAGE" value="Preload the next image in a background thread" />
   </component>
 </project>
