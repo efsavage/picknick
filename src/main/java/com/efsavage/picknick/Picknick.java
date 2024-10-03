@@ -6,8 +6,10 @@ import javafx.beans.binding.DoubleBinding;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
-import javafx.scene.control.Button;
 import javafx.scene.control.ToolBar;
+import javafx.scene.control.Button;
+import javafx.scene.control.Separator;
+import javafx.scene.control.ButtonType;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
@@ -53,19 +55,27 @@ public class Picknick extends Application {
 
         BorderPane root = new BorderPane();
 
-        // ToolBar with buttons
-        Button keepButton = new Button("Keep (k)");
-        Button skipButton = new Button("Skip (s)");
-        Button maybeButton = new Button("Maybe (m)");
-        ToolBar toolBar = new ToolBar(keepButton, skipButton, maybeButton);
+        // Create standard toolbar
+        ToolBar toolBar = new ToolBar();
 
-        root.setBottom(toolBar);
+        Button keepButton = new Button("Keep (k)");
+        keepButton.setOnAction(e -> keepImage());
+        // Optionally add icon to the button
+        // keepButton.setGraphic(new ImageView(new Image("keep_icon.png")));
+
+        Button skipButton = new Button("Skip (s)");
+        skipButton.setOnAction(e -> skipImage());
+        // skipButton.setGraphic(new ImageView(new Image("skip_icon.png")));
+
+        Button maybeButton = new Button("Maybe (m)");
+        maybeButton.setOnAction(e -> maybeImage());
+        // maybeButton.setGraphic(new ImageView(new Image("maybe_icon.png")));
+
+        toolBar.getItems().addAll(keepButton, skipButton, maybeButton);
+
+        root.setTop(toolBar);
         root.setCenter(imageView);
         BorderPane.setMargin(imageView, new Insets(10));
-
-        keepButton.setOnAction(e -> keepImage());
-        skipButton.setOnAction(e -> skipImage());
-        maybeButton.setOnAction(e -> maybeImage());
 
         // Load images from the initial directory
         selectInitialDirectory();
@@ -270,7 +280,7 @@ public class Picknick extends Application {
             imageView.setScaleX(zoomScale);
             imageView.setScaleY(zoomScale);
 
-            // Calculate the new translation using your fix
+            // Calculate the new translation using the correct formula
             double newTranslateX = (0.5 - relativeX) * imageWidth;
             double newTranslateY = (0.5 - relativeY) * imageHeight;
 
