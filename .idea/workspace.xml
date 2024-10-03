@@ -4,8 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Show date/time in toolbar">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Preload the next image">
       <change beforePath="$PROJECT_DIR$/src/main/java/com/efsavage/picknick/Picknick.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/efsavage/picknick/Picknick.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -72,7 +71,7 @@
       <updated>1727917794665</updated>
       <workItem from="1727917795664" duration="355000" />
       <workItem from="1727918159979" duration="549000" />
-      <workItem from="1727918718221" duration="7382000" />
+      <workItem from="1727918718221" duration="7720000" />
     </task>
     <task id="LOCAL-00001" summary="First version">
       <option name="closed" value="true" />
@@ -114,7 +113,15 @@
       <option name="project" value="LOCAL" />
       <updated>1727925687483</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="Preload the next image">
+      <option name="closed" value="true" />
+      <created>1727926423420</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1727926423420</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -125,6 +132,7 @@
     <MESSAGE value="Add full screen" />
     <MESSAGE value="Move buttons to a toolbar" />
     <MESSAGE value="Show date/time in toolbar" />
-    <option name="LAST_COMMIT_MESSAGE" value="Show date/time in toolbar" />
+    <MESSAGE value="Preload the next image" />
+    <option name="LAST_COMMIT_MESSAGE" value="Preload the next image" />
   </component>
 </project>

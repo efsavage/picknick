@@ -4,6 +4,7 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.DoubleBinding;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
@@ -216,18 +217,14 @@ public class Picknick extends Application {
         if (currentIndex < imageFiles.size()) {
             File nefFile = imageFiles.get(currentIndex);
             System.out.println("Displaying image: " + nefFile.getName());
-            try {
-                if (preloadedNextImage != null && tempImageFile != null && tempImageFile.exists() && tempImageFile.equals(nextTempImageFile)) {
-                    // Use preloaded image
-                    imageView.setImage(preloadedNextImage);
-                    System.out.println("Used preloaded image for: " + nefFile.getName());
-                } else {
-                    // Load image normally
-                    tempImageFile = convertNEFToJPEG(nefFile);
-                    Image image = new Image(tempImageFile.toURI().toString());
-                    imageView.setImage(image);
-                    System.out.println("Loaded image normally for: " + nefFile.getName());
-                }
+
+            if (preloadedNextImage != null && tempImageFile != null && tempImageFile.exists() && tempImageFile.equals(nextTempImageFile)) {
+                // Use preloaded image
+                imageView.setImage(preloadedNextImage);
+                tempImageFile = nextTempImageFile;
+                preloadedNextImage = null;
+                nextTempImageFile = null;
+                System.out.println("Used preloaded image for: " + nefFile.getName());
 
                 // Reset zoom state
                 isZoomedIn = false;
@@ -244,15 +241,67 @@ public class Picknick extends Application {
                 // Preload next image
                 preloadNextImage();
 
-            } catch (IOException e) {
-                e.printStackTrace();
-                System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
-                moveToDirectory(nefFile, skipDirectory);
-                deleteTempImageFile();
-                imageFiles.remove(currentIndex);
-                // Do not adjust currentIndex here
-                showImage();
+            } else {
+                // Load image in background thread
+                Task<Void> loadImageTask = new Task<Void>() {
+                    private Image image;
+                    private String captureDateTime;
+                    private File tempFile;
+
+                    @Override
+                    protected Void call() throws Exception {
+                        tempFile = convertNEFToJPEG(nefFile);
+                        image = new Image(tempFile.toURI().toString());
+                        captureDateTime = getCaptureDateTime(nefFile);
+                        return null;
+                    }
+
+                    @Override
+                    protected void succeeded() {
+                        super.succeeded();
+                        // Check if the currentIndex hasn't changed
+                        if (imageFiles.size() > currentIndex && imageFiles.get(currentIndex).equals(nefFile)) {
+                            tempImageFile = tempFile;
+                            imageView.setImage(image);
+
+                            // Reset zoom state
+                            isZoomedIn = false;
+                            resetImageViewTransforms();
+
+                            // Update title
+                            if (captureDateTime != null) {
+                                updateTitle(nefFile.getName() + " - " + captureDateTime);
+                            } else {
+                                updateTitle(nefFile.getName());
+                            }
+
+                            // Preload next image
+                            preloadNextImage();
+                        } else {
+                            // Image has changed; discard temp file
+                            tempFile.delete();
+                        }
+                    }
+
+                    @Override
+                    protected void failed() {
+                        super.failed();
+                        // Handle failure
+                        Throwable e = getException();
+                        e.printStackTrace();
+                        System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
+                        moveToDirectory(nefFile, skipDirectory);
+                        deleteTempImageFile();
+                        imageFiles.remove(currentIndex);
+                        // Do not adjust currentIndex here
+                        showImage();
+                    }
+                };
+
+                // Start the task in a new thread
+                new Thread(loadImageTask).start();
             }
+
         } else {
             // Proceed to next directory if any
             processedDirectories.add(initialDirectory);
@@ -276,33 +325,47 @@ public class Picknick extends Application {
             System.out.println("Preloading next image: " + nextNefFile.getName());
 
             // Run in background thread to avoid blocking UI
-            new Thread(() -> {
-                try {
-                    File tempFile = convertNEFToJPEG(nextNefFile);
-                    Image image = new Image(tempFile.toURI().toString());
+            Task<Void> preloadTask = new Task<Void>() {
+                private Image image;
+                private File tempFile;
 
-                    // Assign preloaded data on the JavaFX Application Thread
-                    Platform.runLater(() -> {
-                        // Check if currentIndex hasn't changed since we started preloading
-                        if (currentIndex + 1 == nextIndex) {
-                            // Clean up previous preloaded image
-                            if (nextTempImageFile != null && nextTempImageFile.exists()) {
-                                nextTempImageFile.delete();
-                            }
-                            preloadedNextImage = image;
-                            nextTempImageFile = tempFile;
-                            System.out.println("Preloaded image: " + nextNefFile.getName());
-                        } else {
-                            // Index has changed; discard this preloaded image
-                            tempFile.delete();
-                            System.out.println("Discarded preloaded image: " + nextNefFile.getName());
+                @Override
+                protected Void call() throws Exception {
+                    tempFile = convertNEFToJPEG(nextNefFile);
+                    image = new Image(tempFile.toURI().toString());
+                    return null;
+                }
+
+                @Override
+                protected void succeeded() {
+                    super.succeeded();
+                    // Check if currentIndex hasn't changed since we started preloading
+                    if (currentIndex + 1 == nextIndex) {
+                        // Clean up previous preloaded image
+                        if (nextTempImageFile != null && nextTempImageFile.exists()) {
+                            nextTempImageFile.delete();
                         }
-                    });
-                } catch (IOException e) {
+                        preloadedNextImage = image;
+                        nextTempImageFile = tempFile;
+                        System.out.println("Preloaded image: " + nextNefFile.getName());
+                    } else {
+                        // Index has changed; discard this preloaded image
+                        tempFile.delete();
+                        System.out.println("Discarded preloaded image: " + nextNefFile.getName());
+                    }
+                }
+
+                @Override
+                protected void failed() {
+                    super.failed();
+                    Throwable e = getException();
                     e.printStackTrace();
                     System.out.println("Error preloading NEF to JPEG: " + nextNefFile.getName());
                 }
-            }).start();
+            };
+
+            new Thread(preloadTask).start();
+
         } else {
             // No more images to preload
             preloadedNextImage = null;
@@ -424,7 +487,6 @@ public class Picknick extends Application {
         moveToDirectory(nefFile, keepDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
-        // Do not delete preloaded image here
         showImage();
     }
 
@@ -434,7 +496,6 @@ public class Picknick extends Application {
         moveToDirectory(nefFile, skipDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
-        // Do not delete preloaded image here
         showImage();
     }
 
@@ -444,7 +505,6 @@ public class Picknick extends Application {
         moveToDirectory(nefFile, maybeDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
-        // Do not delete preloaded image here
         showImage();
     }
 
