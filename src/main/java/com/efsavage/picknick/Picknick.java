@@ -8,8 +8,6 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.ToolBar;
 import javafx.scene.control.Button;
-import javafx.scene.control.Separator;
-import javafx.scene.control.ButtonType;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
@@ -25,6 +23,10 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.List;
+
+import com.drew.imaging.*;
+import com.drew.metadata.*;
+import com.drew.metadata.exif.*;
 
 public class Picknick extends Application {
 
@@ -60,16 +62,12 @@ public class Picknick extends Application {
 
         Button keepButton = new Button("Keep (k)");
         keepButton.setOnAction(e -> keepImage());
-        // Optionally add icon to the button
-        // keepButton.setGraphic(new ImageView(new Image("keep_icon.png")));
 
         Button skipButton = new Button("Skip (s)");
         skipButton.setOnAction(e -> skipImage());
-        // skipButton.setGraphic(new ImageView(new Image("skip_icon.png")));
 
         Button maybeButton = new Button("Maybe (m)");
         maybeButton.setOnAction(e -> maybeImage());
-        // maybeButton.setGraphic(new ImageView(new Image("maybe_icon.png")));
 
         toolBar.getItems().addAll(keepButton, skipButton, maybeButton);
 
@@ -224,7 +222,13 @@ public class Picknick extends Application {
                 isZoomedIn = false;
                 resetImageViewTransforms();
 
-                updateTitle(nefFile.getName());
+                // Update title with capture date and time
+                String captureDateTime = getCaptureDateTime(nefFile);
+                if (captureDateTime != null) {
+                    updateTitle(nefFile.getName() + " - " + captureDateTime);
+                } else {
+                    updateTitle(nefFile.getName());
+                }
             } catch (IOException e) {
                 e.printStackTrace();
                 System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
@@ -247,6 +251,37 @@ public class Picknick extends Application {
                 processDirectory(maybeDirectory);
             }
         }
+    }
+
+    private String getCaptureDateTime(File imageFile) {
+        try {
+            Metadata metadata = ImageMetadataReader.readMetadata(imageFile);
+
+            // NEF files may store date in different directories
+            ExifIFD0Directory exifIFD0Directory = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
+            ExifSubIFDDirectory exifSubIFDDirectory = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
+
+            java.util.Date captureDate = null;
+
+            if (exifSubIFDDirectory != null) {
+                captureDate = exifSubIFDDirectory.getDateOriginal();
+            }
+
+            if (captureDate == null && exifIFD0Directory != null) {
+                captureDate = exifIFD0Directory.getDate(ExifIFD0Directory.TAG_DATETIME);
+            }
+
+            if (captureDate != null) {
+                System.out.println("Capture date: " + captureDate.toString());
+                return captureDate.toString();
+            } else {
+                System.out.println("Capture date not found in metadata.");
+            }
+        } catch (ImageProcessingException | IOException e) {
+            System.out.println("Failed to read metadata from: " + imageFile.getName());
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private void resetImageViewTransforms() {

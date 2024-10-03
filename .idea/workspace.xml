@@ -4,7 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Add full screen" />
+    <list default="true" id="265c1cd1-2489-44ad-90ea-7dd9c902aff7" name="Changes" comment="Move buttons to a toolbar">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/efsavage/picknick/Picknick.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/efsavage/picknick/Picknick.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/module-info.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/module-info.java" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -69,7 +74,7 @@
       <updated>1727917794665</updated>
       <workItem from="1727917795664" duration="355000" />
       <workItem from="1727918159979" duration="549000" />
-      <workItem from="1727918718221" duration="5829000" />
+      <workItem from="1727918718221" duration="6716000" />
     </task>
     <task id="LOCAL-00001" summary="First version">
       <option name="closed" value="true" />
@@ -95,7 +100,15 @@
       <option name="project" value="LOCAL" />
       <updated>1727924548172</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Move buttons to a toolbar">
+      <option name="closed" value="true" />
+      <created>1727924736480</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1727924736480</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -104,6 +117,7 @@
   <component name="VcsManagerConfiguration">
     <MESSAGE value="First version" />
     <MESSAGE value="Add full screen" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add full screen" />
+    <MESSAGE value="Move buttons to a toolbar" />
+    <option name="LAST_COMMIT_MESSAGE" value="Move buttons to a toolbar" />
   </component>
 </project>
