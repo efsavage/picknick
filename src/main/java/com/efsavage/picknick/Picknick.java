@@ -18,6 +18,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
 import javafx.scene.image.Image;
+import javafx.scene.transform.Rotate;
 
 import java.awt.Desktop;
 import java.io.File;
@@ -59,6 +60,9 @@ public class Picknick extends Application {
     private ExecutorService preloadExecutor = Executors.newFixedThreadPool(4);
     private static final int PRELOAD_COUNT = 10; // Number of images to preload ahead
 
+    // Variables for rotation
+    private double currentRotationAngle = 0.0; // Current rotation angle in degrees
+
     @Override
     public void start(Stage primaryStage) {
         this.primaryStage = primaryStage;
@@ -78,7 +82,13 @@ public class Picknick extends Application {
         Button maybeButton = new Button("Maybe (m)");
         maybeButton.setOnAction(e -> maybeImage());
 
-        toolBar.getItems().addAll(keepButton, skipButton, maybeButton);
+        Button rotateClockwiseButton = new Button("Rotate Clockwise (r)");
+        rotateClockwiseButton.setOnAction(e -> rotateClockwise());
+
+        Button rotateCounterClockwiseButton = new Button("Rotate Counter-Clockwise (e)");
+        rotateCounterClockwiseButton.setOnAction(e -> rotateCounterClockwise());
+
+        toolBar.getItems().addAll(keepButton, skipButton, maybeButton, rotateCounterClockwiseButton, rotateClockwiseButton);
 
         root.setTop(toolBar);
         root.setCenter(imageView);
@@ -100,6 +110,10 @@ public class Picknick extends Application {
                 maybeImage();
             } else if (event.getCode() == KeyCode.F11) {
                 toggleFullScreen();
+            } else if (event.getCode() == KeyCode.R) {
+                rotateClockwise();
+            } else if (event.getCode() == KeyCode.E) {
+                rotateCounterClockwise();
             }
         });
 
@@ -222,26 +236,25 @@ public class Picknick extends Application {
     private void showImage() {
         if (currentIndex < imageFiles.size()) {
             File nefFile = imageFiles.get(currentIndex);
-            String fileName = nefFile.getName();
-            System.out.println("Displaying image: " + fileName);
+            String fileKey = nefFile.getAbsolutePath();
+            System.out.println("Displaying image: " + nefFile.getName());
 
-            if (preloadedImages.containsKey(fileName)) {
+            if (preloadedImages.containsKey(fileKey)) {
                 // Use preloaded image
-                Image image = preloadedImages.get(fileName);
+                Image image = preloadedImages.get(fileKey);
                 imageView.setImage(image);
-                tempImageFile = preloadedTempFiles.get(fileName);
-                String captureDateTime = preloadedCaptureDates.get(fileName);
-                System.out.println("Used preloaded image for: " + fileName);
+                tempImageFile = preloadedTempFiles.get(fileKey);
+                String captureDateTime = preloadedCaptureDates.get(fileKey);
+                System.out.println("Used preloaded image for: " + nefFile.getName());
 
-                // Reset zoom state
-                isZoomedIn = false;
+                // Reset transformations
                 resetImageViewTransforms();
 
                 // Update title with capture date and time
                 if (captureDateTime != null) {
-                    updateTitle(fileName + " - " + captureDateTime);
+                    updateTitle(nefFile.getName() + " - " + captureDateTime);
                 } else {
-                    updateTitle(fileName);
+                    updateTitle(nefFile.getName());
                 }
 
                 // Preload next images
@@ -271,19 +284,18 @@ public class Picknick extends Application {
                             imageView.setImage(image);
 
                             // Store in preloaded maps
-                            preloadedImages.put(fileName, image);
-                            preloadedTempFiles.put(fileName, tempFile);
-                            preloadedCaptureDates.put(fileName, captureDateTime);
+                            preloadedImages.put(fileKey, image);
+                            preloadedTempFiles.put(fileKey, tempFile);
+                            preloadedCaptureDates.put(fileKey, captureDateTime);
 
-                            // Reset zoom state
-                            isZoomedIn = false;
+                            // Reset transformations
                             resetImageViewTransforms();
 
                             // Update title
                             if (captureDateTime != null) {
-                                updateTitle(fileName + " - " + captureDateTime);
+                                updateTitle(nefFile.getName() + " - " + captureDateTime);
                             } else {
-                                updateTitle(fileName);
+                                updateTitle(nefFile.getName());
                             }
 
                             // Preload next images
@@ -300,7 +312,7 @@ public class Picknick extends Application {
                         // Handle failure
                         Throwable e = getException();
                         e.printStackTrace();
-                        System.out.println("Error converting NEF to JPEG: " + fileName);
+                        System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
                         moveToDirectory(nefFile, skipDirectory);
                         deleteTempImageFile();
                         imageFiles.remove(currentIndex);
@@ -331,16 +343,10 @@ public class Picknick extends Application {
 
     private void preloadNextImages() {
         // Remove preloaded images that are no longer needed
-        Set<String> currentFileNames = new HashSet<>();
-        for (File file : imageFiles) {
-            currentFileNames.add(file.getName());
-        }
-
-        // Remove entries for files that are no longer in imageFiles
-        preloadedImages.keySet().removeIf(fileName -> !currentFileNames.contains(fileName));
-        preloadedTempFiles.keySet().removeIf(fileName -> {
-            if (!currentFileNames.contains(fileName)) {
-                File tempFile = preloadedTempFiles.get(fileName);
+        preloadedImages.keySet().removeIf(key -> !imageFiles.contains(new File(key)));
+        preloadedTempFiles.keySet().removeIf(key -> {
+            if (!imageFiles.contains(new File(key))) {
+                File tempFile = preloadedTempFiles.get(key);
                 if (tempFile != null && tempFile.exists()) {
                     tempFile.delete();
                 }
@@ -348,15 +354,15 @@ public class Picknick extends Application {
             }
             return false;
         });
-        preloadedCaptureDates.keySet().removeIf(fileName -> !currentFileNames.contains(fileName));
+        preloadedCaptureDates.keySet().removeIf(key -> !imageFiles.contains(new File(key)));
 
         int maxIndex = Math.min(currentIndex + PRELOAD_COUNT, imageFiles.size());
 
         for (int index = currentIndex + 1; index < maxIndex; index++) {
             File nefFile = imageFiles.get(index);
-            String fileName = nefFile.getName();
-            if (!preloadedImages.containsKey(fileName)) {
-                System.out.println("Preloading image: " + fileName);
+            String fileKey = nefFile.getAbsolutePath();
+            if (!preloadedImages.containsKey(fileKey)) {
+                System.out.println("Preloading image at index " + index + ": " + nefFile.getName());
 
                 // Run preload task
                 Task<Void> preloadTask = new Task<Void>() {
@@ -375,16 +381,16 @@ public class Picknick extends Application {
                     @Override
                     protected void succeeded() {
                         super.succeeded();
-                        // Check if the file is still in imageFiles
+                        // Check if the file is still in the list
                         if (imageFiles.contains(nefFile)) {
-                            preloadedImages.put(fileName, image);
-                            preloadedTempFiles.put(fileName, tempFile);
-                            preloadedCaptureDates.put(fileName, captureDateTime);
-                            System.out.println("Preloaded image: " + fileName);
+                            preloadedImages.put(fileKey, image);
+                            preloadedTempFiles.put(fileKey, tempFile);
+                            preloadedCaptureDates.put(fileKey, captureDateTime);
+                            System.out.println("Preloaded image: " + nefFile.getName());
                         } else {
-                            // Image has been removed; discard temp file
+                            // File has been moved or removed; discard this preloaded image
                             tempFile.delete();
-                            System.out.println("Discarded preloaded image: " + fileName);
+                            System.out.println("Discarded preloaded image: " + nefFile.getName());
                         }
                     }
 
@@ -393,7 +399,7 @@ public class Picknick extends Application {
                         super.failed();
                         Throwable e = getException();
                         e.printStackTrace();
-                        System.out.println("Error preloading NEF to JPEG: " + fileName);
+                        System.out.println("Error preloading NEF to JPEG: " + nefFile.getName());
                     }
                 };
 
@@ -438,12 +444,18 @@ public class Picknick extends Application {
         imageView.setTranslateY(0);
         imageView.setScaleX(1);
         imageView.setScaleY(1);
+        imageView.setRotate(0);
+        isZoomedIn = false;
+        currentRotationAngle = 0.0;
     }
 
     private void toggleZoom(MouseEvent event) {
         if (isZoomedIn) {
             // Zoom out
-            resetImageViewTransforms();
+            imageView.setScaleX(1);
+            imageView.setScaleY(1);
+            imageView.setTranslateX(0);
+            imageView.setTranslateY(0);
             isZoomedIn = false;
             System.out.println("Zoomed out");
         } else {
@@ -464,7 +476,7 @@ public class Picknick extends Application {
             imageView.setScaleX(zoomScale);
             imageView.setScaleY(zoomScale);
 
-            // Calculate the new translation using the correct formula
+            // Calculate the new translation
             double newTranslateX = (0.5 - relativeX) * imageWidth;
             double newTranslateY = (0.5 - relativeY) * imageHeight;
 
@@ -511,41 +523,38 @@ public class Picknick extends Application {
 
     private void keepImage() {
         File nefFile = imageFiles.get(currentIndex);
-        String fileName = nefFile.getName();
-        System.out.println("Keeping image: " + fileName);
+        System.out.println("Keeping image: " + nefFile.getName());
         moveToDirectory(nefFile, keepDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
-        removePreloadedImage(fileName);
+        removePreloadedImage(nefFile.getAbsolutePath());
         showImage();
     }
 
     private void skipImage() {
         File nefFile = imageFiles.get(currentIndex);
-        String fileName = nefFile.getName();
-        System.out.println("Skipping image: " + fileName);
+        System.out.println("Skipping image: " + nefFile.getName());
         moveToDirectory(nefFile, skipDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
-        removePreloadedImage(fileName);
+        removePreloadedImage(nefFile.getAbsolutePath());
         showImage();
     }
 
     private void maybeImage() {
         File nefFile = imageFiles.get(currentIndex);
-        String fileName = nefFile.getName();
-        System.out.println("Marking image as maybe: " + fileName);
+        System.out.println("Marking image as maybe: " + nefFile.getName());
         moveToDirectory(nefFile, maybeDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
-        removePreloadedImage(fileName);
+        removePreloadedImage(nefFile.getAbsolutePath());
         showImage();
     }
 
-    private void removePreloadedImage(String fileName) {
-        preloadedImages.remove(fileName);
-        preloadedCaptureDates.remove(fileName);
-        File tempFile = preloadedTempFiles.remove(fileName);
+    private void removePreloadedImage(String fileKey) {
+        preloadedImages.remove(fileKey);
+        preloadedCaptureDates.remove(fileKey);
+        File tempFile = preloadedTempFiles.remove(fileKey);
         if (tempFile != null && tempFile.exists()) {
             tempFile.delete();
         }
@@ -624,6 +633,19 @@ public class Picknick extends Application {
     public void stop() throws Exception {
         super.stop();
         preloadExecutor.shutdownNow();
+    }
+
+    // New methods for rotation
+    private void rotateClockwise() {
+        currentRotationAngle = (currentRotationAngle + 90) % 360;
+        imageView.setRotate(currentRotationAngle);
+        System.out.println("Rotated clockwise to " + currentRotationAngle + " degrees");
+    }
+
+    private void rotateCounterClockwise() {
+        currentRotationAngle = (currentRotationAngle - 90) % 360;
+        imageView.setRotate(currentRotationAngle);
+        System.out.println("Rotated counter-clockwise to " + currentRotationAngle + " degrees");
     }
 
     public static void main(String[] args) {
