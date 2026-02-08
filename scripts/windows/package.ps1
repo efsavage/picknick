@@ -13,8 +13,15 @@ if (!(Test-Path $Mvnw)) {
     throw "mvnw.cmd not found at $Mvnw"
 }
 
-if (!(Get-Command jpackage -ErrorAction SilentlyContinue)) {
-    throw "jpackage not found. Install JDK 17+ and ensure it is on PATH."
+$JPackage = Get-Command jpackage -ErrorAction SilentlyContinue
+if (!$JPackage -and $env:JAVA_HOME) {
+    $Candidate = Join-Path $env:JAVA_HOME "bin\jpackage.exe"
+    if (Test-Path $Candidate) {
+        $JPackage = $Candidate
+    }
+}
+if (!$JPackage) {
+    throw "jpackage not found. Install JDK 17+ and ensure it is on PATH, or set JAVA_HOME to the JDK."
 }
 
 Write-Host "Building custom runtime image..."
@@ -34,7 +41,7 @@ $OutDir = Join-Path $RepoRoot "target\installer"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 Write-Host "Packaging $Type installer..."
-& jpackage `
+& $JPackage `
     --type $Type `
     --app-image $AppImage `
     --name "Picknick" `
