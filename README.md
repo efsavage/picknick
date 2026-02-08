@@ -80,6 +80,28 @@ Follow these steps to build and run Picknick with Maven:
 
     -   On Windows, use `mvnw.cmd javafx:run`.
 
+## Windows Installer (Start Menu Shortcut)
+
+To create an installer with a Start Menu shortcut, use the PowerShell script:
+
+1.  **Open PowerShell**
+2.  **Run the packaging script**
+
+    ```powershell
+    .\\scripts\\windows\\package.ps1
+    ```
+
+    -   This creates an MSI by default in `target\\installer`.
+    -   For an EXE installer:
+
+    ```powershell
+    .\\scripts\\windows\\package.ps1 -Type exe
+    ```
+
+Requirements:
+-   JDK 17+ with `jpackage` on `PATH`
+-   `dcraw` on `PATH`
+
 ## Usage Instructions
 
 1.  **Select the Initial Directory**
