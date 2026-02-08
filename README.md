@@ -26,30 +26,22 @@ Picknick is a simple JavaFX application designed to help you quickly sort throug
 
 Before running Picknick, ensure that you have the following installed on your system:
 
-1.  **Java Development Kit (JDK) 8 or higher**
+1.  **Java Development Kit (JDK) 17 or higher**
 
     -   Download and install from [Oracle's website](https://www.oracle.com/java/technologies/javase-downloads.html) or use OpenJDK from [AdoptOpenJDK](https://adoptopenjdk.net/).
 2.  **dcraw**
 
     -   A command-line tool for decoding raw image data.
     -   Install via your package manager or download from dcraw's website.
-3.  **metadata-extractor Library**
-
-    -   A Java library for reading metadata from image files.
-    -   Download the latest JAR file from [GitHub Releases](https://github.com/drewnoakes/metadata-extractor/releases).
-
 ## Installation and Setup
 
 1.  **Clone or Download the Source Code**
 
     -   Clone the repository or download the source code to your local machine.
-2.  **Place the `metadata-extractor` JAR File**
-
-    -   Copy the `metadata-extractor-x.x.x.jar` file into the same directory as the `Picknick.java` file.
-3.  **Ensure `dcraw` Is Accessible**
+2.  **Ensure `dcraw` Is Accessible**
 
     -   Make sure `dcraw` is installed and accessible via your system's `PATH` environment variable.
-4.  **Adjust the Initial Directory Path (Optional)**
+3.  **Adjust the Initial Directory Path (Optional)**
 
     -   Open `Picknick.java` in a text editor.
 
@@ -66,37 +58,27 @@ Before running Picknick, ensure that you have the following installed on your sy
 
 ## Running the Application
 
-Follow these steps to compile and run Picknick from the command line:
+Follow these steps to build and run Picknick with Maven:
 
 1.  **Open a Terminal or Command Prompt**
 
-2.  **Navigate to the Source Code Directory**
+2.  **Navigate to the Project Directory**
 
     bash
 
     Copy code
 
-    `cd path/to/your/source/code`
+    `cd path/to/your/project`
 
-3.  **Compile the Application**
-
-    bash
-
-    Copy code
-
-    `javac -cp .;metadata-extractor-x.x.x.jar Picknick.java`
-
-    -   Replace `metadata-extractor-x.x.x.jar` with the actual filename of the JAR you downloaded.
-    -   On Unix/Linux systems, replace `;` with `:` in the classpath.
-4.  **Run the Application**
+3.  **Run the Application**
 
     bash
 
     Copy code
 
-    `java -cp .;metadata-extractor-x.x.x.jar Picknick`
+    `./mvnw javafx:run`
 
-    -   Again, replace `;` with `:` on Unix/Linux systems.
+    -   On Windows, use `mvnw.cmd javafx:run`.
 
 ## Usage Instructions
 
