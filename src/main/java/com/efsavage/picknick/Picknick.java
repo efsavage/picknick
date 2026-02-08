@@ -1492,6 +1492,26 @@ public class Picknick extends Application {
                 captureDate = exifIFD0Directory.getDate(ExifIFD0Directory.TAG_DATETIME);
             }
 
+            if (captureDate != null && exifSubIFDDirectory != null) {
+                String subSec = exifSubIFDDirectory.getString(ExifSubIFDDirectory.TAG_SUBSECOND_TIME_ORIGINAL);
+                if (subSec != null && !subSec.isBlank()) {
+                    String digits = subSec.replaceAll("\\D", "");
+                    if (!digits.isEmpty()) {
+                        if (digits.length() > 3) {
+                            digits = digits.substring(0, 3);
+                        } else if (digits.length() < 3) {
+                            digits = String.format("%-3s", digits).replace(' ', '0');
+                        }
+                        try {
+                            int millis = Integer.parseInt(digits);
+                            captureDate = new Date(captureDate.getTime() + millis);
+                        } catch (NumberFormatException ignored) {
+                            // Ignore malformed subseconds
+                        }
+                    }
+                }
+            }
+
             return captureDate;
         } catch (ImageProcessingException | IOException e) {
             System.out.println("Failed to read metadata from: " + imageFile.getName());
