@@ -575,7 +575,9 @@ public class Picknick extends Application {
                             try {
                                 try (var stream = Files.list(path)) {
                                     if (!stream.findFirst().isPresent()) {
-                                        Files.deleteIfExists(path);
+                                        if (!path.equals(root.toPath())) {
+                                            Files.deleteIfExists(path);
+                                        }
                                     }
                                 }
                             } catch (IOException e) {
