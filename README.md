@@ -101,6 +101,7 @@ To create an installer with a Start Menu shortcut, use the PowerShell script:
 Requirements:
 -   JDK 17+ with `jpackage` on `PATH`
 -   `dcraw` on `PATH`
+-   `icon.ico` in the repo root (generated from `icon.png`)
 
 ## Usage Instructions
 

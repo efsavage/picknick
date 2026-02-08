@@ -25,6 +25,11 @@ if (!(Test-Path $AppImage)) {
     throw "Expected app image not found at $AppImage"
 }
 
+$IconPath = Join-Path $RepoRoot "icon.ico"
+if (!(Test-Path $IconPath)) {
+    throw "Icon not found at $IconPath. Create icon.ico in the repo root."
+}
+
 $OutDir = Join-Path $RepoRoot "target\installer"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -34,6 +39,7 @@ Write-Host "Packaging $Type installer..."
     --app-image $AppImage `
     --name "Picknick" `
     --vendor "Eric F. Savage" `
+    --icon $IconPath `
     --dest $OutDir `
     --win-menu `
     --win-shortcut
