@@ -12,6 +12,8 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
@@ -202,7 +204,7 @@ public class Picknick extends Application {
 
     private void setupHomeToolBar() {
         Button rescanButton = new Button("Rescan");
-        rescanButton.setOnAction(e -> refreshSessions());
+        rescanButton.setOnAction(e -> refreshSessions(true));
 
         Button mergeButton = new Button("Merge Sessions");
         mergeButton.setOnAction(e -> showAlert("Merge Sessions", "Merge UI coming soon."));
@@ -211,7 +213,7 @@ public class Picknick extends Application {
         splitButton.setOnAction(e -> showAlert("Split Session", "Split UI coming soon."));
 
         showArchivedCheckBox = new CheckBox("Show archived");
-        showArchivedCheckBox.setOnAction(e -> refreshSessions());
+        showArchivedCheckBox.setOnAction(e -> refreshSessions(false));
 
         homeToolBar = new ToolBar(rescanButton, mergeButton, splitButton, showArchivedCheckBox);
     }
@@ -296,8 +298,8 @@ public class Picknick extends Application {
         }
         rootPane.setTop(homeToolBar);
         rootPane.setCenter(homeContent);
-        System.out.println("Home screen ready. Refreshing sessions...");
-        refreshSessions();
+        System.out.println("Home screen ready. Loading sessions...");
+        refreshSessions(false);
     }
 
     private VBox buildHomeContent() {
@@ -334,14 +336,14 @@ public class Picknick extends Application {
         return container;
     }
 
-    private void refreshSessions() {
-        System.out.println("Scanning import for sessions...");
-        setHomeBusy(true, "Scanning import...");
+    private void refreshSessions(boolean rescanImport) {
+        System.out.println(rescanImport ? "Scanning import for sessions..." : "Loading sessions from disk...");
+        setHomeBusy(true, rescanImport ? "Scanning import..." : "Loading sessions...");
 
         Task<List<Session>> scanTask = new Task<>() {
             @Override
             protected List<Session> call() {
-                return rescanSessions();
+                return loadSessions(rescanImport);
             }
         };
 
@@ -509,7 +511,7 @@ public class Picknick extends Application {
             SessionMetadata metadata = readSessionMetadata(session.directory);
             System.out.println("Renaming session " + session.folderName + " to \"" + newName + "\"");
             writeSessionMetadata(session.directory, newName, session.totalCount, metadata.archived);
-            refreshSessions();
+            refreshSessions(false);
         };
 
         editor.setOnAction(e -> commit.run());
@@ -524,7 +526,7 @@ public class Picknick extends Application {
         mergeSessionsWithProgress(sourceDir, targetSession, null);
     }
 
-    private void mergeSessionsWithProgress(File sourceDir, Session targetSession, MergeTask task) {
+    private void mergeSessionsWithProgress(File sourceDir, Session targetSession, ProgressReporter task) {
         if (sourceDir == null || targetSession == null || targetSession.directory == null) {
             return;
         }
@@ -559,7 +561,7 @@ public class Picknick extends Application {
                 + listMediaFiles(new File(targetDir, "maybe")).size();
         SessionMetadata metadata = readSessionMetadata(targetDir);
         writeSessionMetadata(targetDir, metadata.name, totalCount, metadata.archived);
-        refreshSessions();
+        refreshSessions(false);
         System.out.println("Merge complete. New total: " + totalCount);
     }
 
@@ -585,6 +587,37 @@ public class Picknick extends Application {
         });
 
         new Thread(mergeTask, "session-merge").start();
+    }
+
+    private void runSplitAfterAsync(File pivotFile, Session session) {
+        if (pivotFile == null || session == null || session.directory == null) {
+            return;
+        }
+        setHomeBusy(true, "Splitting session...");
+        SplitTask splitTask = new SplitTask(pivotFile, session);
+        Stage dialog = showMergeDialog(splitTask);
+
+        splitTask.setOnSucceeded(event -> {
+            if (dialog != null) {
+                dialog.close();
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+            refreshSessions(false);
+            refreshGallery();
+        });
+
+        splitTask.setOnFailed(event -> {
+            Throwable error = splitTask.getException();
+            if (error != null) {
+                showAlert("Split Failed", error.getMessage());
+            }
+            if (dialog != null) {
+                dialog.close();
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+        });
+
+        new Thread(splitTask, "session-split").start();
     }
 
     private Stage showMergeDialog(Task<?> mergeTask) {
@@ -614,6 +647,87 @@ public class Picknick extends Application {
         return dialog;
     }
 
+    private void splitSessionAfterWithProgress(File pivotFile, Session session, ProgressReporter task) {
+        Date pivotDate = getCaptureDate(pivotFile);
+        if (pivotDate == null) {
+            showAlert("Split Failed", "Could not read capture time for the selected image.");
+            return;
+        }
+
+        File sessionDir = session.directory;
+        List<File> rootFiles = listMediaFiles(sessionDir);
+        List<File> keepFiles = listMediaFiles(new File(sessionDir, "keep"));
+        List<File> skipFiles = listMediaFiles(new File(sessionDir, "skip"));
+        List<File> maybeFiles = listMediaFiles(new File(sessionDir, "maybe"));
+
+        List<File> rootMove = new ArrayList<>();
+        List<File> keepMove = new ArrayList<>();
+        List<File> skipMove = new ArrayList<>();
+        List<File> maybeMove = new ArrayList<>();
+
+        Date minDate = null;
+        minDate = collectSplitFiles(rootFiles, pivotDate, rootMove, minDate);
+        minDate = collectSplitFiles(keepFiles, pivotDate, keepMove, minDate);
+        minDate = collectSplitFiles(skipFiles, pivotDate, skipMove, minDate);
+        minDate = collectSplitFiles(maybeFiles, pivotDate, maybeMove, minDate);
+
+        int total = rootMove.size() + keepMove.size() + skipMove.size() + maybeMove.size();
+        if (total == 0 || minDate == null) {
+            if (task != null) {
+                task.reportMessage("No images after this one.");
+                task.reportProgress(1, 1);
+            }
+            return;
+        }
+
+        String dateKey = formatDateKey(minDate);
+        int nextIndex = getNextSessionIndexByDate().getOrDefault(dateKey, 0) + 1;
+        File newSessionDir = new File(sessionDirectory, dateKey + "-" + nextIndex);
+        newSessionDir.mkdirs();
+        File newKeepDir = new File(newSessionDir, "keep");
+        File newSkipDir = new File(newSessionDir, "skip");
+        File newMaybeDir = new File(newSessionDir, "maybe");
+        newKeepDir.mkdirs();
+        newSkipDir.mkdirs();
+        newMaybeDir.mkdirs();
+
+        if (task != null) {
+            task.reportProgress(0, Math.max(1, total));
+            task.reportMessage("Splitting " + total + " files...");
+        }
+
+        int moved = 0;
+        moved = moveFilesWithProgress(rootMove, newSessionDir, task, moved, total, "Moving unreviewed");
+        moved = moveFilesWithProgress(keepMove, newKeepDir, task, moved, total, "Moving keep");
+        moved = moveFilesWithProgress(skipMove, newSkipDir, task, moved, total, "Moving skip");
+        moved = moveFilesWithProgress(maybeMove, newMaybeDir, task, moved, total, "Moving maybe");
+
+        writeSessionMetadata(newSessionDir, newSessionDir.getName(), total, false);
+
+        int remainingTotal = listMediaFiles(sessionDir).size()
+                + listMediaFiles(new File(sessionDir, "keep")).size()
+                + listMediaFiles(new File(sessionDir, "skip")).size()
+                + listMediaFiles(new File(sessionDir, "maybe")).size();
+        SessionMetadata metadata = readSessionMetadata(sessionDir);
+        writeSessionMetadata(sessionDir, metadata.name, remainingTotal, metadata.archived);
+    }
+
+    private Date collectSplitFiles(List<File> files, Date pivotDate, List<File> destination, Date minDate) {
+        for (File file : files) {
+            Date captureDate = getCaptureDate(file);
+            if (captureDate == null) {
+                continue;
+            }
+            if (captureDate.after(pivotDate)) {
+                destination.add(file);
+                if (minDate == null || captureDate.before(minDate)) {
+                    minDate = captureDate;
+                }
+            }
+        }
+        return minDate;
+    }
+
     private void deleteDirectoryIfEmpty(File directory) {
         if (directory == null || !directory.isDirectory()) {
             return;
@@ -641,8 +755,10 @@ public class Picknick extends Application {
         }
     }
 
-    private List<Session> rescanSessions() {
-        moveImportsToSessions();
+    private List<Session> loadSessions(boolean rescanImport) {
+        if (rescanImport) {
+            moveImportsToSessions();
+        }
         return loadSessionsFromDisk(showArchivedCheckBox != null && showArchivedCheckBox.isSelected());
     }
 
@@ -682,8 +798,8 @@ public class Picknick extends Application {
             galleryTilePane.setHgap(16);
             galleryTilePane.setVgap(16);
             galleryTilePane.setPrefColumns(4);
-            galleryTilePane.setPrefTileWidth(200);
-            galleryTilePane.setPrefTileHeight(170);
+            galleryTilePane.setPrefTileWidth(240);
+            galleryTilePane.setPrefTileHeight(200);
             galleryTilePane.setTileAlignment(Pos.TOP_LEFT);
             galleryTilePane.setPadding(new Insets(8));
 
@@ -940,8 +1056,8 @@ public class Picknick extends Application {
 
     private VBox buildGalleryCard(GalleryItem item) {
         ImageView thumbnail = new ImageView();
-        thumbnail.setFitWidth(180);
-        thumbnail.setFitHeight(120);
+        thumbnail.setFitWidth(216);
+        thumbnail.setFitHeight(144);
         thumbnail.setPreserveRatio(true);
 
         String borderColor = switch (item.state) {
@@ -960,13 +1076,19 @@ public class Picknick extends Application {
             thumbnail.setImage(cached);
         } else {
             thumbnailExecutor.submit(() -> {
-                Image image = loadThumbnailForFile(item.file, 180);
+                Image image = loadThumbnailForFile(item.file, 216);
                 if (image != null) {
                     sessionThumbnailCache.put(item.file.getAbsolutePath(), image);
                     Platform.runLater(() -> thumbnail.setImage(image));
                 }
             });
         }
+
+        ContextMenu menu = new ContextMenu();
+        MenuItem splitAfter = new MenuItem("Split after this");
+        splitAfter.setOnAction(event -> runSplitAfterAsync(item.file, gallerySession));
+        menu.getItems().add(splitAfter);
+        card.setOnContextMenuRequested(event -> menu.show(card, event.getScreenX(), event.getScreenY()));
 
         return card;
     }
@@ -1131,7 +1253,7 @@ public class Picknick extends Application {
         }
     }
 
-    private int moveFilesWithProgress(List<File> files, File targetDirectory, MergeTask task, int moved, int total, String label) {
+    private int moveFilesWithProgress(List<File> files, File targetDirectory, ProgressReporter task, int moved, int total, String label) {
         if (files.isEmpty()) {
             return moved;
         }
@@ -1217,7 +1339,7 @@ public class Picknick extends Application {
         metadata.archived = !metadata.archived;
         System.out.println((metadata.archived ? "Archived" : "Unarchived") + " session: " + session.folderName);
         writeSessionMetadata(session.directory, metadata.name != null ? metadata.name : session.folderName, session.totalCount, metadata.archived);
-        refreshSessions();
+        refreshSessions(false);
     }
 
     private SessionMetadata readSessionMetadata(File sessionFolder) {
@@ -1802,7 +1924,12 @@ public class Picknick extends Application {
         private int totalCount;
     }
 
-    private class MergeTask extends Task<Void> {
+    private interface ProgressReporter {
+        void reportProgress(long workDone, long max);
+        void reportMessage(String message);
+    }
+
+    private class MergeTask extends Task<Void> implements ProgressReporter {
         private final File sourceDir;
         private final Session targetSession;
 
@@ -1817,11 +1944,39 @@ public class Picknick extends Application {
             return null;
         }
 
-        private void reportProgress(long workDone, long max) {
+        @Override
+        public void reportProgress(long workDone, long max) {
             updateProgress(workDone, max);
         }
 
-        private void reportMessage(String message) {
+        @Override
+        public void reportMessage(String message) {
+            updateMessage(message);
+        }
+    }
+
+    private class SplitTask extends Task<Void> implements ProgressReporter {
+        private final File pivotFile;
+        private final Session session;
+
+        private SplitTask(File pivotFile, Session session) {
+            this.pivotFile = pivotFile;
+            this.session = session;
+        }
+
+        @Override
+        protected Void call() {
+            splitSessionAfterWithProgress(pivotFile, session, this);
+            return null;
+        }
+
+        @Override
+        public void reportProgress(long workDone, long max) {
+            updateProgress(workDone, max);
+        }
+
+        @Override
+        public void reportMessage(String message) {
             updateMessage(message);
         }
     }
