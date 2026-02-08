@@ -51,6 +51,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -89,11 +91,18 @@ public class Picknick extends Application {
     private ToolBar viewerToolBar;
     private ToolBar homeToolBar;
     private ToolBar galleryToolBar;
+    private ToolBar burstToolBar;
     private VBox homeContent;
     private TilePane sessionTilePane;
     private ScrollPane sessionScrollPane;
     private TilePane galleryTilePane;
     private ScrollPane galleryScrollPane;
+    private BorderPane burstPane;
+    private ImageView burstLeftView;
+    private ImageView burstRightView;
+    private Label burstLeftLabel;
+    private Label burstRightLabel;
+    private Label burstHintLabel;
     private CheckBox showRejectedCheckBox;
     private Label homeSubtitle;
     private ProgressIndicator homeProgress;
@@ -129,6 +138,13 @@ public class Picknick extends Application {
     private boolean isViewerActive = false;
     private Session currentSession;
     private Session gallerySession;
+    private boolean isBurstActive = false;
+    private List<File> burstQueue = new ArrayList<>();
+    private int burstIndex = 0;
+    private final List<File> burstWinners = new ArrayList<>();
+    private final Map<String, List<File>> burstGroupByFile = new HashMap<>();
+    private final Set<String> completedBurstGroups = new HashSet<>();
+    private static final long BURST_GAP_MS = 2000L;
     private final Preferences preferences = Preferences.userNodeForPackage(Picknick.class);
     private static final String PREF_WINDOW_X = "window.x";
     private static final String PREF_WINDOW_Y = "window.y";
@@ -152,6 +168,7 @@ public class Picknick extends Application {
         setupViewerToolBar();
         setupHomeToolBar();
         setupGalleryToolBar();
+        setupBurstToolBar();
         setupImageViewInteractions();
         setupSceneShortcuts(scene);
         setupViewerBindings();
@@ -208,6 +225,16 @@ public class Picknick extends Application {
         );
     }
 
+    private void setupBurstToolBar() {
+        Button backButton = new Button("Exit Burst");
+        backButton.setOnAction(e -> exitBurstMode());
+
+        Label hint = new Label("←/→ picks winner, ↑ ties (advances both)");
+        hint.setStyle("-fx-text-fill: #555;");
+
+        burstToolBar = new ToolBar(backButton, hint);
+    }
+
     private void setupHomeToolBar() {
         Button rescanButton = new Button("Rescan");
         rescanButton.setOnAction(e -> refreshSessions(true));
@@ -261,6 +288,9 @@ public class Picknick extends Application {
     private void setupSceneShortcuts(Scene scene) {
         scene.setOnKeyPressed(event -> {
             if (!isViewerActive) {
+                if (isBurstActive) {
+                    handleBurstKey(event.getCode());
+                }
                 return;
             }
             if (event.getCode() == KeyCode.K) {
@@ -295,6 +325,7 @@ public class Picknick extends Application {
 
     private void showHomeScreen() {
         isViewerActive = false;
+        isBurstActive = false;
         currentSession = null;
         gallerySession = null;
         updateTitle(null);
@@ -833,6 +864,7 @@ public class Picknick extends Application {
         rootPane.setCenter(imageView);
         BorderPane.setMargin(imageView, new Insets(10));
 
+        prepareBurstGroups(session);
         showImage();
     }
 
@@ -842,6 +874,7 @@ public class Picknick extends Application {
         }
         gallerySession = session;
         isViewerActive = false;
+        isBurstActive = false;
         System.out.println("Opening gallery for session: " + session.folderName);
         updateTitle("Gallery");
 
@@ -876,11 +909,254 @@ public class Picknick extends Application {
         galleryTilePane.getChildren().setAll(buildGalleryCards(items));
     }
 
+    private void prepareBurstGroups(Session session) {
+        burstGroupByFile.clear();
+        completedBurstGroups.clear();
+        if (session == null) {
+            return;
+        }
+        List<File> allFiles = new ArrayList<>();
+        allFiles.addAll(listMediaFiles(session.directory));
+        allFiles.addAll(listMediaFiles(new File(session.directory, "keep")));
+        allFiles.addAll(listMediaFiles(new File(session.directory, "maybe")));
+        allFiles.addAll(listMediaFiles(new File(session.directory, "skip")));
+
+        if (allFiles.isEmpty()) {
+            return;
+        }
+
+        allFiles.sort((a, b) -> compareByCaptureThenName(a, getCaptureDate(a), b, getCaptureDate(b)));
+
+        List<File> group = new ArrayList<>();
+        Date lastDate = null;
+        for (File file : allFiles) {
+            Date captureDate = getCaptureDate(file);
+            if (captureDate == null) {
+                continue;
+            }
+            if (lastDate == null || captureDate.getTime() - lastDate.getTime() <= BURST_GAP_MS) {
+                group.add(file);
+            } else {
+                registerBurstGroup(group);
+                group = new ArrayList<>();
+                group.add(file);
+            }
+            lastDate = captureDate;
+        }
+        registerBurstGroup(group);
+    }
+
+    private void registerBurstGroup(List<File> group) {
+        if (group == null || group.size() < 2) {
+            return;
+        }
+        String key = burstGroupKey(group);
+        for (File file : group) {
+            burstGroupByFile.put(file.getAbsolutePath(), group);
+        }
+    }
+
+    private String burstGroupKey(List<File> group) {
+        if (group == null || group.isEmpty()) {
+            return "";
+        }
+        return group.get(0).getAbsolutePath();
+    }
+
+    private boolean shouldEnterBurst(File currentFile) {
+        if (currentFile == null || burstGroupByFile.isEmpty()) {
+            return false;
+        }
+        List<File> group = burstGroupByFile.get(currentFile.getAbsolutePath());
+        if (group == null || group.size() < 2) {
+            return false;
+        }
+        String key = burstGroupKey(group);
+        return !completedBurstGroups.contains(key);
+    }
+
+    private void enterBurstMode(File currentFile) {
+        List<File> group = burstGroupByFile.get(currentFile.getAbsolutePath());
+        if (group == null || group.size() < 2) {
+            return;
+        }
+        isBurstActive = true;
+        isViewerActive = false;
+        burstQueue = new ArrayList<>(group);
+        burstWinners.clear();
+        burstIndex = 0;
+        updateTitle("Burst Review");
+
+        if (burstPane == null) {
+            burstLeftView = new ImageView();
+            burstRightView = new ImageView();
+            burstLeftView.setFitWidth(400);
+            burstLeftView.setFitHeight(400);
+            burstLeftView.setPreserveRatio(true);
+            burstRightView.setFitWidth(400);
+            burstRightView.setFitHeight(400);
+            burstRightView.setPreserveRatio(true);
+
+            burstLeftLabel = new Label();
+            burstRightLabel = new Label();
+            burstHintLabel = new Label("←/→ picks winner, ↑ ties (advances both)");
+            burstHintLabel.setStyle("-fx-text-fill: #666;");
+
+            VBox leftBox = new VBox(8, burstLeftView, burstLeftLabel);
+            VBox rightBox = new VBox(8, burstRightView, burstRightLabel);
+            leftBox.setAlignment(Pos.CENTER);
+            rightBox.setAlignment(Pos.CENTER);
+
+            HBox images = new HBox(20, leftBox, rightBox);
+            images.setAlignment(Pos.CENTER);
+            VBox center = new VBox(10, images, burstHintLabel);
+            center.setAlignment(Pos.CENTER);
+            center.setPadding(new Insets(16));
+
+            burstPane = new BorderPane(center);
+        }
+
+        rootPane.setTop(burstToolBar);
+        rootPane.setCenter(burstPane);
+        if (burstHintLabel != null) {
+            burstHintLabel.setText("←/→ picks winner, ↑ ties (advances both)");
+        }
+        showBurstPair();
+    }
+
+    private void showBurstPair() {
+        if (!isBurstActive) {
+            return;
+        }
+        if (burstQueue.size() <= 1) {
+            finalizeBurst();
+            return;
+        }
+        File left = burstQueue.get(burstIndex % burstQueue.size());
+        File right = burstQueue.get((burstIndex + 1) % burstQueue.size());
+
+        burstLeftLabel.setText(left.getName());
+        burstRightLabel.setText(right.getName());
+
+        loadBurstImage(left, burstLeftView);
+        loadBurstImage(right, burstRightView);
+    }
+
+    private void handleBurstKey(KeyCode code) {
+        if (!isBurstActive || burstQueue.size() <= 1) {
+            return;
+        }
+        File left = burstQueue.get(burstIndex % burstQueue.size());
+        File right = burstQueue.get((burstIndex + 1) % burstQueue.size());
+
+        if (code == KeyCode.LEFT) {
+            burstWinners.add(left);
+            markBurstLoser(right);
+            advanceBurst();
+        } else if (code == KeyCode.RIGHT) {
+            burstWinners.add(right);
+            markBurstLoser(left);
+            advanceBurst();
+        } else if (code == KeyCode.UP) {
+            if (burstQueue.size() == 2) {
+                keepBurstWinners(left, right);
+                finalizeBurst();
+            } else {
+                burstWinners.add(left);
+                burstWinners.add(right);
+                if (burstHintLabel != null) {
+                    burstHintLabel.setText("Multiple winners. Continue comparing to resolve.");
+                }
+                advanceBurst();
+            }
+        }
+    }
+
+    private void advanceBurst() {
+        List<File> nextQueue = new ArrayList<>();
+        for (File file : burstQueue) {
+            if (burstWinners.contains(file)) {
+                nextQueue.add(file);
+            }
+        }
+        if (nextQueue.isEmpty()) {
+            nextQueue.addAll(burstWinners);
+        }
+        burstQueue = nextQueue;
+        burstWinners.clear();
+        burstIndex = 0;
+        if (burstQueue.size() <= 1) {
+            finalizeBurst();
+        } else {
+            showBurstPair();
+        }
+    }
+
+    private void markBurstLoser(File file) {
+        if (file == null || currentSession == null || sessionSkipDirectory == null) {
+            return;
+        }
+        if (file.getParentFile().equals(sessionSkipDirectory)) {
+            return;
+        }
+        moveToDirectory(file, sessionSkipDirectory);
+    }
+
+    private void finalizeBurst() {
+        if (burstQueue.size() == 1) {
+            File winner = burstQueue.get(0);
+            if (winner != null && sessionKeepDirectory != null && !winner.getParentFile().equals(sessionKeepDirectory)) {
+                moveToDirectory(winner, sessionKeepDirectory);
+            }
+        }
+        List<File> group = burstGroupByFile.get(burstQueue.get(0).getAbsolutePath());
+        String key = burstGroupKey(group);
+        completedBurstGroups.add(key);
+        exitBurstMode();
+        showImage();
+    }
+
+    private void keepBurstWinners(File first, File second) {
+        if (sessionKeepDirectory == null) {
+            return;
+        }
+        if (first != null && !first.getParentFile().equals(sessionKeepDirectory)) {
+            moveToDirectory(first, sessionKeepDirectory);
+        }
+        if (second != null && !second.getParentFile().equals(sessionKeepDirectory)) {
+            moveToDirectory(second, sessionKeepDirectory);
+        }
+    }
+
+    private void exitBurstMode() {
+        isBurstActive = false;
+        updateTitle(null);
+        rootPane.setTop(viewerToolBar);
+        rootPane.setCenter(imageView);
+    }
+
+    private void loadBurstImage(File file, ImageView targetView) {
+        if (file == null || targetView == null) {
+            return;
+        }
+        thumbnailExecutor.submit(() -> {
+            Image image = loadThumbnailForFile(file, 400);
+            if (image != null) {
+                Platform.runLater(() -> targetView.setImage(image));
+            }
+        });
+    }
+
     private void showImage() {
         if (currentIndex < imageFiles.size()) {
             File nefFile = imageFiles.get(currentIndex);
             String fileKey = nefFile.getAbsolutePath();
             System.out.println("Displaying image: " + nefFile.getName());
+
+            if (shouldEnterBurst(nefFile)) {
+                enterBurstMode(nefFile);
+                return;
+            }
 
             if (preloadedImages.containsKey(fileKey)) {
                 Image image = preloadedImages.get(fileKey);
