@@ -11,9 +11,9 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.control.ListCell;
-import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.ToolBar;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
@@ -23,6 +23,7 @@ import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
@@ -72,7 +73,8 @@ public class Picknick extends Application {
     private ToolBar viewerToolBar;
     private ToolBar homeToolBar;
     private VBox homeContent;
-    private ListView<Session> sessionListView;
+    private TilePane sessionTilePane;
+    private ScrollPane sessionScrollPane;
     private Label homeSubtitle;
     private ProgressIndicator homeProgress;
     private DoubleBinding viewerFitWidth;
@@ -278,20 +280,23 @@ public class Picknick extends Application {
         HBox headerRow = new HBox(10, title, homeProgress);
         headerRow.setAlignment(Pos.CENTER_LEFT);
 
-        sessionListView = new ListView<>();
-        sessionListView.setCellFactory(list -> new SessionCell());
-        sessionListView.setOnMouseClicked(event -> {
-            if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) {
-                Session selected = sessionListView.getSelectionModel().getSelectedItem();
-                if (selected != null) {
-                    startSession(selected);
-                }
-            }
-        });
+        sessionTilePane = new TilePane();
+        sessionTilePane.setHgap(16);
+        sessionTilePane.setVgap(16);
+        sessionTilePane.setPrefColumns(3);
+        sessionTilePane.setPrefTileWidth(240);
+        sessionTilePane.setPrefTileHeight(260);
+        sessionTilePane.setTileAlignment(Pos.TOP_LEFT);
+        sessionTilePane.setPadding(new Insets(4));
 
-        VBox container = new VBox(10, headerRow, homeSubtitle, sessionListView);
+        sessionScrollPane = new ScrollPane(sessionTilePane);
+        sessionScrollPane.setFitToWidth(true);
+        sessionScrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        sessionScrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+
+        VBox container = new VBox(10, headerRow, homeSubtitle, sessionScrollPane);
         container.setPadding(new Insets(16));
-        VBox.setVgrow(sessionListView, Priority.ALWAYS);
+        VBox.setVgrow(sessionScrollPane, Priority.ALWAYS);
         return container;
     }
 
@@ -307,7 +312,7 @@ public class Picknick extends Application {
 
         scanTask.setOnSucceeded(event -> {
             List<Session> sessions = scanTask.getValue();
-            sessionListView.getItems().setAll(sessions);
+            sessionTilePane.getChildren().setAll(buildSessionCards(sessions));
             setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
         });
 
@@ -320,6 +325,67 @@ public class Picknick extends Application {
         });
 
         new Thread(scanTask).start();
+    }
+
+    private List<javafx.scene.Node> buildSessionCards(List<Session> sessions) {
+        List<javafx.scene.Node> cards = new ArrayList<>();
+        for (Session session : sessions) {
+            cards.add(buildSessionCard(session));
+        }
+        return cards;
+    }
+
+    private VBox buildSessionCard(Session session) {
+        ImageView thumbnail = new ImageView();
+        thumbnail.setFitWidth(216);
+        thumbnail.setFitHeight(132);
+        thumbnail.setPreserveRatio(true);
+
+        Label title = new Label(formatSessionTitle(session));
+        title.setStyle("-fx-font-weight: bold;");
+
+        Label subtitle = new Label(formatSessionSubtitle(session));
+        subtitle.setStyle("-fx-text-fill: #666;");
+
+        ProgressBar progressBar = new ProgressBar();
+        progressBar.setPrefWidth(216);
+        progressBar.setProgress(session.totalCount > 0
+                ? (double) (session.totalCount - session.remainingCount) / session.totalCount
+                : 0.0);
+
+        Label percentLabel = new Label(formatSessionPercent(session));
+        percentLabel.setStyle("-fx-text-fill: #444;");
+
+        HBox progressRow = new HBox(8, progressBar, percentLabel);
+        progressRow.setAlignment(Pos.CENTER_LEFT);
+
+        VBox card = new VBox(8, thumbnail, title, subtitle, progressRow);
+        card.setPadding(new Insets(12));
+        card.setPrefWidth(240);
+        card.setStyle("-fx-background-color: #f7f7f7; -fx-background-radius: 10; -fx-border-radius: 10; -fx-border-color: #e0e0e0;");
+
+        if (session.sampleFile != null) {
+            String key = session.sampleFile.getAbsolutePath();
+            Image cached = sessionThumbnailCache.get(key);
+            if (cached != null) {
+                thumbnail.setImage(cached);
+            } else {
+                thumbnailExecutor.submit(() -> {
+                    Image image = loadSessionThumbnail(session);
+                    if (image != null) {
+                        Platform.runLater(() -> thumbnail.setImage(image));
+                    }
+                });
+            }
+        }
+
+        card.setOnMouseClicked(event -> {
+            if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) {
+                startSession(session);
+            }
+        });
+
+        return card;
     }
 
     private List<Session> rescanSessions() {
@@ -576,25 +642,47 @@ public class Picknick extends Application {
         List<Session> sessions = new ArrayList<>();
 
         for (File folder : folders) {
-        File[] files = folder.listFiles((dir, name) -> {
-            String lower = name.toLowerCase();
-            return lower.endsWith(".nef") || lower.endsWith(".jpg") || lower.endsWith(".jpeg");
-        });
-            if (files == null || files.length == 0) {
+            List<File> rootFiles = listMediaFiles(folder);
+            File keepDir = new File(folder, "keep");
+            File skipDir = new File(folder, "skip");
+            File maybeDir = new File(folder, "maybe");
+
+            List<File> keepFiles = listMediaFiles(keepDir);
+            List<File> skipFiles = listMediaFiles(skipDir);
+            List<File> maybeFiles = listMediaFiles(maybeDir);
+
+            int totalCount = rootFiles.size() + keepFiles.size() + skipFiles.size() + maybeFiles.size();
+            if (totalCount == 0) {
                 continue;
             }
 
             Session session = new Session();
             session.folderName = folder.getName();
             session.directory = folder;
-            Collections.addAll(session.files, files);
-            session.sampleFile = files[0];
+            session.files.addAll(rootFiles);
             session.unknown = "unknown".equalsIgnoreCase(folder.getName());
+            session.totalCount = totalCount;
+            session.remainingCount = rootFiles.size();
+
+            if (!rootFiles.isEmpty()) {
+                session.sampleFile = rootFiles.get(0);
+            } else if (!keepFiles.isEmpty()) {
+                session.sampleFile = keepFiles.get(0);
+            } else if (!skipFiles.isEmpty()) {
+                session.sampleFile = skipFiles.get(0);
+            } else if (!maybeFiles.isEmpty()) {
+                session.sampleFile = maybeFiles.get(0);
+            }
 
             Date start = null;
             Date end = null;
+            List<File> allFiles = new ArrayList<>();
+            allFiles.addAll(rootFiles);
+            allFiles.addAll(keepFiles);
+            allFiles.addAll(skipFiles);
+            allFiles.addAll(maybeFiles);
 
-            for (File file : files) {
+            for (File file : allFiles) {
                 Date captureDate = getCaptureDate(file);
                 if (captureDate == null) {
                     continue;
@@ -682,6 +770,22 @@ public class Picknick extends Application {
         } catch (IOException e) {
             // Ignore cleanup failures
         }
+    }
+
+    private List<File> listMediaFiles(File directory) {
+        if (directory == null || !directory.isDirectory()) {
+            return Collections.emptyList();
+        }
+        File[] files = directory.listFiles((dir, name) -> {
+            String lower = name.toLowerCase();
+            return lower.endsWith(".nef") || lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+        });
+        if (files == null || files.length == 0) {
+            return Collections.emptyList();
+        }
+        List<File> result = new ArrayList<>();
+        Collections.addAll(result, files);
+        return result;
     }
 
     private String formatDateKey(Date date) {
@@ -793,12 +897,25 @@ public class Picknick extends Application {
     }
 
     private String formatSessionSubtitle(Session session) {
-        int count = session.files.size();
-        String base = count + " photo" + (count == 1 ? "" : "s");
+        String base;
+        if (session.totalCount > 0) {
+            base = session.remainingCount + " remaining of " + session.totalCount;
+        } else {
+            base = session.files.size() + " remaining";
+        }
         if (session.folderName != null && !session.folderName.isBlank()) {
             return base + " • " + session.folderName;
         }
         return base;
+    }
+
+    private String formatSessionPercent(Session session) {
+        if (session.totalCount == 0) {
+            return "0%";
+        }
+        int completed = session.totalCount - session.remainingCount;
+        int percent = (int) Math.round((completed * 100.0) / session.totalCount);
+        return percent + "%";
     }
 
     private void resetImageViewTransforms() {
@@ -1048,7 +1165,9 @@ public class Picknick extends Application {
         }
         Platform.runLater(() -> {
             homeProgress.setVisible(busy);
-            sessionListView.setDisable(busy);
+            if (sessionScrollPane != null) {
+                sessionScrollPane.setDisable(busy);
+            }
             homeToolBar.setDisable(busy);
             homeSubtitle.setText(subtitle);
         });
@@ -1142,60 +1261,6 @@ public class Picknick extends Application {
         return null;
     }
 
-    private class SessionCell extends ListCell<Session> {
-        private final HBox container = new HBox(12);
-        private final ImageView thumbnail = new ImageView();
-        private final VBox textBox = new VBox(4);
-        private final Label title = new Label();
-        private final Label subtitle = new Label();
-
-        SessionCell() {
-            thumbnail.setFitWidth(180);
-            thumbnail.setFitHeight(110);
-            thumbnail.setPreserveRatio(true);
-            title.setStyle("-fx-font-weight: bold;");
-            subtitle.setStyle("-fx-text-fill: #666;");
-            textBox.getChildren().addAll(title, subtitle);
-            textBox.setAlignment(Pos.CENTER_LEFT);
-            container.getChildren().addAll(thumbnail, textBox);
-            container.setAlignment(Pos.CENTER_LEFT);
-        }
-
-        @Override
-        protected void updateItem(Session session, boolean empty) {
-            super.updateItem(session, empty);
-            if (empty || session == null) {
-                setGraphic(null);
-                return;
-            }
-
-            title.setText(formatSessionTitle(session));
-            subtitle.setText(formatSessionSubtitle(session));
-            thumbnail.setImage(null);
-
-            if (session.sampleFile != null) {
-                String key = session.sampleFile.getAbsolutePath();
-                Image cached = sessionThumbnailCache.get(key);
-                if (cached != null) {
-                    thumbnail.setImage(cached);
-                } else {
-                    thumbnailExecutor.submit(() -> {
-                        Image image = loadSessionThumbnail(session);
-                        if (image != null) {
-                            Platform.runLater(() -> {
-                                if (getItem() == session) {
-                                    thumbnail.setImage(image);
-                                }
-                            });
-                        }
-                    });
-                }
-            }
-
-            setGraphic(container);
-        }
-    }
-
     private static class Session {
         private final List<File> files = new ArrayList<>();
         private Date start;
@@ -1204,6 +1269,8 @@ public class Picknick extends Application {
         private File directory;
         private String folderName;
         private boolean unknown = false;
+        private int totalCount;
+        private int remainingCount;
     }
 
     public static void main(String[] args) {
