@@ -85,7 +85,7 @@ if ($Type -ne "app-image") {
 
 if ($Type -eq "app-image") {
     $AppDir = Join-Path $OutDir "Picknick"
-    $ExePath = Join-Path $AppDir "bin\\Picknick.exe"
+    $ExePath = Join-Path $AppDir "Picknick.exe"
     if (!(Test-Path $ExePath)) {
         throw "Expected app image executable not found at $ExePath"
     }
