@@ -87,6 +87,7 @@ public class Picknick extends Application {
     private File rootDirectory;
     private File importDirectory;
     private File sessionDirectory;
+    private File movDirectory;
     private File sessionKeepDirectory;
     private File sessionSkipDirectory;
     private File sessionMaybeDirectory;
@@ -138,6 +139,7 @@ public class Picknick extends Application {
         rootDirectory = new File(rootDirectoryPath);
         importDirectory = new File(rootDirectory, "import");
         sessionDirectory = new File(rootDirectory, "session");
+        movDirectory = new File(rootDirectory, "mov");
         if (!rootDirectory.exists()) {
             rootDirectory.mkdirs();
         }
@@ -145,6 +147,7 @@ public class Picknick extends Application {
             importDirectory.mkdirs();
         }
         sessionDirectory.mkdirs();
+        movDirectory.mkdirs();
     }
 
     private void setupViewerToolBar() {
@@ -445,6 +448,7 @@ public class Picknick extends Application {
 
     private void moveImportsToSessions() {
         List<File> allFiles = new ArrayList<>();
+        List<File> movFiles = new ArrayList<>();
         try {
             Files.walk(importDirectory.toPath())
                     .filter(path -> Files.isRegularFile(path))
@@ -456,12 +460,18 @@ public class Picknick extends Application {
                             } catch (IOException e) {
                                 System.out.println("Failed to delete NC_FLLST.DAT: " + path);
                             }
+                        } else if (filename.endsWith(".mov")) {
+                            movFiles.add(path.toFile());
                         } else if (filename.endsWith(".nef") || filename.endsWith(".jpg") || filename.endsWith(".jpeg")) {
                             allFiles.add(path.toFile());
                         }
                     });
         } catch (IOException e) {
             showAlert("Error", "Failed to scan import folder: " + e.getMessage());
+        }
+
+        if (!movFiles.isEmpty()) {
+            moveFiles(movFiles, movDirectory);
         }
 
         if (allFiles.isEmpty()) {
