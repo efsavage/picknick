@@ -630,6 +630,37 @@ public class Picknick extends Application {
         new Thread(splitTask, "session-split").start();
     }
 
+    private void runSplitBeforeAsync(File pivotFile, Session session) {
+        if (pivotFile == null || session == null || session.directory == null) {
+            return;
+        }
+        setHomeBusy(true, "Splitting session...");
+        SplitTask splitTask = new SplitTask(pivotFile, session, true);
+        Stage dialog = showMergeDialog(splitTask);
+
+        splitTask.setOnSucceeded(event -> {
+            if (dialog != null) {
+                dialog.close();
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+            refreshSessions(false);
+            refreshGallery();
+        });
+
+        splitTask.setOnFailed(event -> {
+            Throwable error = splitTask.getException();
+            if (error != null) {
+                showAlert("Split Failed", error.getMessage());
+            }
+            if (dialog != null) {
+                dialog.close();
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+        });
+
+        new Thread(splitTask, "session-split-before").start();
+    }
+
     private Stage showMergeDialog(Task<?> mergeTask) {
         if (primaryStage == null) {
             return null;
@@ -658,6 +689,14 @@ public class Picknick extends Application {
     }
 
     private void splitSessionAfterWithProgress(File pivotFile, Session session, ProgressReporter task) {
+        splitSessionAroundWithProgress(pivotFile, session, task, false);
+    }
+
+    private void splitSessionBeforeWithProgress(File pivotFile, Session session, ProgressReporter task) {
+        splitSessionAroundWithProgress(pivotFile, session, task, true);
+    }
+
+    private void splitSessionAroundWithProgress(File pivotFile, Session session, ProgressReporter task, boolean splitBefore) {
         Date pivotDate = getCaptureDate(pivotFile);
         if (pivotDate == null) {
             showAlert("Split Failed", "Could not read capture time for the selected image.");
@@ -676,18 +715,18 @@ public class Picknick extends Application {
         List<File> maybeMove = new ArrayList<>();
 
         Date minDate = null;
-        minDate = collectSplitFiles(rootFiles, pivotDate, rootMove, minDate);
-        minDate = collectSplitFiles(keepFiles, pivotDate, keepMove, minDate);
-        minDate = collectSplitFiles(skipFiles, pivotDate, skipMove, minDate);
-        minDate = collectSplitFiles(maybeFiles, pivotDate, maybeMove, minDate);
+        minDate = collectSplitFiles(rootFiles, pivotDate, rootMove, minDate, splitBefore);
+        minDate = collectSplitFiles(keepFiles, pivotDate, keepMove, minDate, splitBefore);
+        minDate = collectSplitFiles(skipFiles, pivotDate, skipMove, minDate, splitBefore);
+        minDate = collectSplitFiles(maybeFiles, pivotDate, maybeMove, minDate, splitBefore);
 
         int total = rootMove.size() + keepMove.size() + skipMove.size() + maybeMove.size();
         if (total == 0 || minDate == null) {
-            if (task != null) {
-                task.reportMessage("No images after this one.");
-                task.reportProgress(1, 1);
-            }
-            return;
+        if (task != null) {
+            task.reportMessage(splitBefore ? "No images before this one." : "No images after this one.");
+            task.reportProgress(1, 1);
+        }
+        return;
         }
 
         String dateKey = formatDateKey(minDate);
@@ -722,13 +761,14 @@ public class Picknick extends Application {
         writeSessionMetadata(sessionDir, metadata.name, remainingTotal, metadata.archived);
     }
 
-    private Date collectSplitFiles(List<File> files, Date pivotDate, List<File> destination, Date minDate) {
+    private Date collectSplitFiles(List<File> files, Date pivotDate, List<File> destination, Date minDate, boolean splitBefore) {
         for (File file : files) {
             Date captureDate = getCaptureDate(file);
             if (captureDate == null) {
                 continue;
             }
-            if (captureDate.after(pivotDate)) {
+            boolean shouldMove = splitBefore ? captureDate.before(pivotDate) : captureDate.after(pivotDate);
+            if (shouldMove) {
                 destination.add(file);
                 if (minDate == null || captureDate.before(minDate)) {
                     minDate = captureDate;
@@ -1096,9 +1136,11 @@ public class Picknick extends Application {
         }
 
         ContextMenu menu = new ContextMenu();
+        MenuItem splitBefore = new MenuItem("Split before this");
+        splitBefore.setOnAction(event -> runSplitBeforeAsync(item.file, gallerySession));
         MenuItem splitAfter = new MenuItem("Split after this");
         splitAfter.setOnAction(event -> runSplitAfterAsync(item.file, gallerySession));
-        menu.getItems().add(splitAfter);
+        menu.getItems().addAll(splitBefore, splitAfter);
         card.setOnContextMenuRequested(event -> menu.show(card, event.getScreenX(), event.getScreenY()));
 
         return card;
@@ -2048,15 +2090,26 @@ public class Picknick extends Application {
     private class SplitTask extends Task<Void> implements ProgressReporter {
         private final File pivotFile;
         private final Session session;
+        private final boolean splitBefore;
 
         private SplitTask(File pivotFile, Session session) {
             this.pivotFile = pivotFile;
             this.session = session;
+            this.splitBefore = false;
+        }
+        private SplitTask(File pivotFile, Session session, boolean splitBefore) {
+            this.pivotFile = pivotFile;
+            this.session = session;
+            this.splitBefore = splitBefore;
         }
 
         @Override
         protected Void call() {
-            splitSessionAfterWithProgress(pivotFile, session, this);
+            if (splitBefore) {
+                splitSessionBeforeWithProgress(pivotFile, session, this);
+            } else {
+                splitSessionAfterWithProgress(pivotFile, session, this);
+            }
             return null;
         }
 
