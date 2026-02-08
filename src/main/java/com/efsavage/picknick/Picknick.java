@@ -6,72 +6,144 @@ import javafx.beans.binding.Bindings;
 import javafx.beans.binding.DoubleBinding;
 import javafx.concurrent.Task;
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
-import javafx.scene.control.ToolBar;
 import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
+import javafx.scene.control.ToolBar;
+import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
-import javafx.stage.DirectoryChooser;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
-import javafx.scene.image.Image;
-import javafx.scene.transform.Rotate;
 
-import java.awt.Desktop;
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.text.SimpleDateFormat;
+import java.security.MessageDigest;
+import java.security.DigestInputStream;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import com.drew.imaging.*;
-import com.drew.metadata.*;
-import com.drew.metadata.exif.*;
+import com.drew.imaging.ImageMetadataReader;
+import com.drew.imaging.ImageProcessingException;
+import com.drew.metadata.Metadata;
+import com.drew.metadata.exif.ExifIFD0Directory;
+import com.drew.metadata.exif.ExifSubIFDDirectory;
 
 public class Picknick extends Application {
 
-    private List<File> imageFiles = new ArrayList<>();
-    private int currentIndex = 0;
-    private ImageView imageView = new ImageView();
-    private File tempImageFile;
-    private Map<String, Image> preloadedImages = Collections.synchronizedMap(new HashMap<>());
-    private Map<String, File> preloadedTempFiles = Collections.synchronizedMap(new HashMap<>());
-    private Map<String, String> preloadedCaptureDates = Collections.synchronizedMap(new HashMap<>());
-    private Stage primaryStage;
-    private boolean isZoomedIn = false;
-    private double zoomScale = 2.0; // Zoom scale factor
+    private static final long SESSION_GAP_MS = 60 * 60 * 1000L;
 
-    private String dcrawPath = "dcraw"; // Assuming dcraw is on the PATH
-    private String initialDirectoryPath = "x:/Dropbox/z8/import/pick";
-    private File initialDirectory;
+    private final List<File> imageFiles = new ArrayList<>();
+    private int currentIndex = 0;
+    private final ImageView imageView = new ImageView();
+    private File tempImageFile;
+    private final Map<String, Image> preloadedImages = Collections.synchronizedMap(new HashMap<>());
+    private final Map<String, File> preloadedTempFiles = Collections.synchronizedMap(new HashMap<>());
+    private final Map<String, String> preloadedCaptureDates = Collections.synchronizedMap(new HashMap<>());
+
+    private Stage primaryStage;
+    private BorderPane rootPane;
+    private ToolBar viewerToolBar;
+    private ToolBar homeToolBar;
+    private VBox homeContent;
+    private ListView<Session> sessionListView;
+    private DoubleBinding viewerFitWidth;
+    private DoubleBinding viewerFitHeight;
+
+    private boolean isZoomedIn = false;
+    private double zoomScale = 2.0;
+    private double currentRotationAngle = 0.0;
+
+    private final String dcrawPath = "dcraw";
+    private final String rootDirectoryPath = "x:/Dropbox/picknick";
+    private File rootDirectory;
+    private File importDirectory;
+    private File sessionDirectory;
     private File keepDirectory;
     private File skipDirectory;
     private File maybeDirectory;
-    private List<File> processedDirectories = new ArrayList<>();
 
-    // Variables for dragging
     private double dragStartX;
     private double dragStartY;
 
-    // Executor for preloading images
-    private ExecutorService preloadExecutor = Executors.newFixedThreadPool(4);
-    private static final int PRELOAD_COUNT = 10; // Number of images to preload ahead
+    private final ExecutorService preloadExecutor = Executors.newFixedThreadPool(4);
+    private final ExecutorService thumbnailExecutor = Executors.newFixedThreadPool(2);
+    private static final int PRELOAD_COUNT = 10;
 
-    // Variables for rotation
-    private double currentRotationAngle = 0.0; // Current rotation angle in degrees
+    private final Map<String, Image> sessionThumbnailCache = new ConcurrentHashMap<>();
+    private final List<File> sessionThumbnailTempFiles = Collections.synchronizedList(new ArrayList<>());
+
+    private boolean isViewerActive = false;
+    private Session currentSession;
 
     @Override
     public void start(Stage primaryStage) {
         this.primaryStage = primaryStage;
         primaryStage.setTitle("Picknick");
 
-        BorderPane root = new BorderPane();
+        initRootDirectories();
 
-        // Create standard toolbar
-        ToolBar toolBar = new ToolBar();
+        rootPane = new BorderPane();
+        Scene scene = new Scene(rootPane, 900, 650);
+
+        setupViewerToolBar();
+        setupHomeToolBar();
+        setupImageViewInteractions();
+        setupSceneShortcuts(scene);
+        setupViewerBindings();
+
+        primaryStage.setScene(scene);
+        showHomeScreen();
+        primaryStage.show();
+    }
+
+    private void initRootDirectories() {
+        rootDirectory = new File(rootDirectoryPath);
+        importDirectory = new File(rootDirectory, "import");
+        sessionDirectory = new File(rootDirectory, "session");
+        keepDirectory = new File(rootDirectory, "keep");
+        skipDirectory = new File(rootDirectory, "skip");
+        maybeDirectory = new File(rootDirectory, "maybe");
+
+        if (!rootDirectory.exists()) {
+            rootDirectory.mkdirs();
+        }
+        if (!importDirectory.exists()) {
+            importDirectory.mkdirs();
+        }
+        sessionDirectory.mkdirs();
+        keepDirectory.mkdirs();
+        skipDirectory.mkdirs();
+        maybeDirectory.mkdirs();
+    }
+
+    private void setupViewerToolBar() {
+        Button homeButton = new Button("Sessions");
+        homeButton.setOnAction(e -> showHomeScreen());
 
         Button keepButton = new Button("Keep (k)");
         keepButton.setOnAction(e -> keepImage());
@@ -88,20 +160,58 @@ public class Picknick extends Application {
         Button rotateCounterClockwiseButton = new Button("Rotate Counter-Clockwise (e)");
         rotateCounterClockwiseButton.setOnAction(e -> rotateCounterClockwise());
 
-        toolBar.getItems().addAll(keepButton, skipButton, maybeButton, rotateCounterClockwiseButton, rotateClockwiseButton);
+        viewerToolBar = new ToolBar(
+                homeButton,
+                keepButton,
+                skipButton,
+                maybeButton,
+                rotateCounterClockwiseButton,
+                rotateClockwiseButton
+        );
+    }
 
-        root.setTop(toolBar);
-        root.setCenter(imageView);
-        BorderPane.setMargin(imageView, new Insets(10));
+    private void setupHomeToolBar() {
+        Button rescanButton = new Button("Rescan");
+        rescanButton.setOnAction(e -> refreshSessions());
 
-        // Load images from the initial directory
-        selectInitialDirectory();
-        processDirectory(initialDirectory);
+        Button mergeButton = new Button("Merge Sessions");
+        mergeButton.setOnAction(e -> showAlert("Merge Sessions", "Merge UI coming soon."));
 
-        Scene scene = new Scene(root, 800, 600);
+        Button splitButton = new Button("Split Session");
+        splitButton.setOnAction(e -> showAlert("Split Session", "Split UI coming soon."));
 
-        // Keyboard shortcuts
+        homeToolBar = new ToolBar(rescanButton, mergeButton, splitButton);
+    }
+
+    private void setupImageViewInteractions() {
+        imageView.setPreserveRatio(true);
+
+        imageView.setOnMouseClicked(event -> {
+            if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) {
+                toggleZoom(event);
+            }
+        });
+
+        imageView.setOnMousePressed(event -> {
+            if (isZoomedIn) {
+                dragStartX = event.getSceneX() - imageView.getTranslateX();
+                dragStartY = event.getSceneY() - imageView.getTranslateY();
+            }
+        });
+
+        imageView.setOnMouseDragged(event -> {
+            if (isZoomedIn) {
+                imageView.setTranslateX(event.getSceneX() - dragStartX);
+                imageView.setTranslateY(event.getSceneY() - dragStartY);
+            }
+        });
+    }
+
+    private void setupSceneShortcuts(Scene scene) {
         scene.setOnKeyPressed(event -> {
+            if (!isViewerActive) {
+                return;
+            }
             if (event.getCode() == KeyCode.K) {
                 keepImage();
             } else if (event.getCode() == KeyCode.S) {
@@ -116,121 +226,87 @@ public class Picknick extends Application {
                 rotateCounterClockwise();
             }
         });
+    }
 
-        // Image double-click to zoom
-        imageView.setOnMouseClicked(event -> {
+    private void setupViewerBindings() {
+        viewerFitWidth = Bindings.createDoubleBinding(() ->
+                        rootPane.getWidth() - rootPane.getPadding().getLeft() - rootPane.getPadding().getRight(),
+                rootPane.widthProperty(), rootPane.paddingProperty());
+
+        viewerFitHeight = Bindings.createDoubleBinding(() ->
+                        rootPane.getHeight() - viewerToolBar.getHeight() - rootPane.getPadding().getTop() -
+                                rootPane.getPadding().getBottom(),
+                rootPane.heightProperty(), viewerToolBar.heightProperty(), rootPane.paddingProperty());
+
+        imageView.fitWidthProperty().bind(viewerFitWidth);
+        imageView.fitHeightProperty().bind(viewerFitHeight);
+    }
+
+    private void showHomeScreen() {
+        isViewerActive = false;
+        currentSession = null;
+        updateTitle(null);
+
+        if (homeContent == null) {
+            homeContent = buildHomeContent();
+        }
+        rootPane.setTop(homeToolBar);
+        rootPane.setCenter(homeContent);
+        refreshSessions();
+    }
+
+    private VBox buildHomeContent() {
+        Label title = new Label("Picknick Sessions");
+        title.setStyle("-fx-font-size: 20px; -fx-font-weight: bold;");
+
+        Label subtitle = new Label("Scanning for sessions in: " + importDirectory.getAbsolutePath());
+        subtitle.setStyle("-fx-text-fill: #444;");
+
+        sessionListView = new ListView<>();
+        sessionListView.setCellFactory(list -> new SessionCell());
+        sessionListView.setOnMouseClicked(event -> {
             if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) {
-                toggleZoom(event);
+                Session selected = sessionListView.getSelectionModel().getSelectedItem();
+                if (selected != null) {
+                    startSession(selected);
+                }
             }
         });
 
-        // Enable dragging when zoomed in
-        imageView.setOnMousePressed(event -> {
-            if (isZoomedIn) {
-                dragStartX = event.getSceneX() - imageView.getTranslateX();
-                dragStartY = event.getSceneY() - imageView.getTranslateY();
-            }
-        });
-
-        imageView.setOnMouseDragged(event -> {
-            if (isZoomedIn) {
-                imageView.setTranslateX(event.getSceneX() - dragStartX);
-                imageView.setTranslateY(event.getSceneY() - dragStartY);
-            }
-        });
-
-        primaryStage.setScene(scene);
-
-        // Bind imageView fitWidth and fitHeight to the root pane size minus margins
-        DoubleBinding fitWidth = Bindings.createDoubleBinding(() ->
-                        root.getWidth() - root.getPadding().getLeft() - root.getPadding().getRight(),
-                root.widthProperty(), root.paddingProperty());
-
-        DoubleBinding fitHeight = Bindings.createDoubleBinding(() ->
-                        root.getHeight() - toolBar.getHeight() - root.getPadding().getTop() - root.getPadding().getBottom(),
-                root.heightProperty(), toolBar.heightProperty(), root.paddingProperty());
-
-        imageView.fitWidthProperty().bind(fitWidth);
-        imageView.fitHeightProperty().bind(fitHeight);
-        imageView.setPreserveRatio(true);
-
-        primaryStage.show();
+        VBox container = new VBox(10, title, subtitle, sessionListView);
+        container.setPadding(new Insets(16));
+        VBox.setVgrow(sessionListView, Priority.ALWAYS);
+        return container;
     }
 
-    private void toggleFullScreen() {
-        boolean isFullScreen = primaryStage.isFullScreen();
-        primaryStage.setFullScreen(!isFullScreen);
-        System.out.println("Fullscreen mode toggled to: " + (!isFullScreen));
+    private void refreshSessions() {
+        List<Session> sessions = rescanSessions();
+        sessionListView.getItems().setAll(sessions);
     }
 
-    private void selectInitialDirectory() {
-        File defaultDirectory = new File(initialDirectoryPath);
-        if (!defaultDirectory.exists()) {
-            // Use default Windows Pictures folder
-            defaultDirectory = new File(System.getProperty("user.home"), "Pictures");
-            System.out.println("Default directory does not exist. Using Pictures folder: " + defaultDirectory.getAbsolutePath());
-        } else {
-            System.out.println("Using default initial directory: " + defaultDirectory.getAbsolutePath());
-        }
-
-        DirectoryChooser directoryChooser = new DirectoryChooser();
-        directoryChooser.setTitle("Select Image Directory");
-        if (defaultDirectory.exists()) {
-            directoryChooser.setInitialDirectory(defaultDirectory);
-        }
-
-        initialDirectory = directoryChooser.showDialog(primaryStage);
-
-        if (initialDirectory == null || !initialDirectory.exists()) {
-            showAlert("Directory Not Found", "No directory selected or directory does not exist.");
-            System.out.println("No directory selected or directory does not exist.");
-            System.exit(0);
-        }
-
-        System.out.println("Selected initial directory: " + initialDirectory.getAbsolutePath());
-
-        keepDirectory = new File(initialDirectory, "keep");
-        skipDirectory = new File(initialDirectory, "skip");
-        maybeDirectory = new File(initialDirectory, "maybe");
-
-        keepDirectory.mkdirs();
-        skipDirectory.mkdirs();
-        maybeDirectory.mkdirs();
-
-        System.out.println("Keep directory: " + keepDirectory.getAbsolutePath());
-        System.out.println("Skip directory: " + skipDirectory.getAbsolutePath());
-        System.out.println("Maybe directory: " + maybeDirectory.getAbsolutePath());
+    private List<Session> rescanSessions() {
+        moveImportsToSessions();
+        return loadSessionsFromDisk();
     }
 
-    private void processDirectory(File directory) {
+    private void startSession(Session session) {
+        if (session == null || session.files.isEmpty()) {
+            showAlert("Empty Session", "No images found for this session.");
+            return;
+        }
+
+        isViewerActive = true;
+        currentSession = session;
         imageFiles.clear();
+        imageFiles.addAll(session.files);
         currentIndex = 0;
+        clearPreloadedImages();
 
-        System.out.println("Processing directory: " + directory.getAbsolutePath());
+        rootPane.setTop(viewerToolBar);
+        rootPane.setCenter(imageView);
+        BorderPane.setMargin(imageView, new Insets(10));
 
-        File[] files = directory.listFiles((dir, name) -> name.toLowerCase().endsWith(".nef"));
-        if (files != null && files.length > 0) {
-            Arrays.sort(files); // Sort files alphabetically
-            for (File file : files) {
-                imageFiles.add(file);
-                System.out.println("Found image file: " + file.getName());
-            }
-            showImage();
-        } else {
-            // No images in this directory, proceed to next
-            processedDirectories.add(directory);
-            System.out.println("No NEF files found in directory: " + directory.getAbsolutePath());
-            if (directory.equals(maybeDirectory)) {
-                // All done
-                cleanupEmptyDirectories();
-                System.out.println("All images have been processed.");
-                showAlert("Done", "All images have been processed.");
-                openKeepDirectoryAndExit();
-            } else {
-                // If main directory is done, process 'maybe' directory
-                processDirectory(maybeDirectory);
-            }
-        }
+        showImage();
     }
 
     private void showImage() {
@@ -240,28 +316,22 @@ public class Picknick extends Application {
             System.out.println("Displaying image: " + nefFile.getName());
 
             if (preloadedImages.containsKey(fileKey)) {
-                // Use preloaded image
                 Image image = preloadedImages.get(fileKey);
                 imageView.setImage(image);
                 tempImageFile = preloadedTempFiles.get(fileKey);
                 String captureDateTime = preloadedCaptureDates.get(fileKey);
-                System.out.println("Used preloaded image for: " + nefFile.getName());
 
-                // Reset transformations
                 resetImageViewTransforms();
 
-                // Update title with capture date and time
                 if (captureDateTime != null) {
                     updateTitle(nefFile.getName() + " - " + captureDateTime);
                 } else {
                     updateTitle(nefFile.getName());
                 }
 
-                // Preload next images
                 preloadNextImages();
 
             } else {
-                // Load image in background thread
                 Task<Void> loadImageTask = new Task<Void>() {
                     private Image image;
                     private String captureDateTime;
@@ -271,37 +341,32 @@ public class Picknick extends Application {
                     protected Void call() throws Exception {
                         tempFile = convertNEFToJPEG(nefFile);
                         image = new Image(tempFile.toURI().toString());
-                        captureDateTime = getCaptureDateTime(nefFile);
+                        Date captureDate = getCaptureDate(nefFile);
+                        captureDateTime = captureDate != null ? captureDate.toString() : null;
                         return null;
                     }
 
                     @Override
                     protected void succeeded() {
                         super.succeeded();
-                        // Check if the currentIndex hasn't changed
                         if (imageFiles.size() > currentIndex && imageFiles.get(currentIndex).equals(nefFile)) {
                             tempImageFile = tempFile;
                             imageView.setImage(image);
 
-                            // Store in preloaded maps
                             preloadedImages.put(fileKey, image);
                             preloadedTempFiles.put(fileKey, tempFile);
                             preloadedCaptureDates.put(fileKey, captureDateTime);
 
-                            // Reset transformations
                             resetImageViewTransforms();
 
-                            // Update title
                             if (captureDateTime != null) {
                                 updateTitle(nefFile.getName() + " - " + captureDateTime);
                             } else {
                                 updateTitle(nefFile.getName());
                             }
 
-                            // Preload next images
                             preloadNextImages();
                         } else {
-                            // Image has changed; discard temp file
                             tempFile.delete();
                         }
                     }
@@ -309,40 +374,226 @@ public class Picknick extends Application {
                     @Override
                     protected void failed() {
                         super.failed();
-                        // Handle failure
                         Throwable e = getException();
                         e.printStackTrace();
                         System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
                         moveToDirectory(nefFile, skipDirectory);
                         deleteTempImageFile();
                         imageFiles.remove(currentIndex);
-                        // Do not adjust currentIndex here
                         showImage();
                     }
                 };
 
-                // Start the task in a new thread
                 new Thread(loadImageTask).start();
             }
 
         } else {
-            // Proceed to next directory if any
-            processedDirectories.add(initialDirectory);
-            if (initialDirectory.equals(maybeDirectory)) {
-                // All done
-                cleanupEmptyDirectories();
-                System.out.println("All images have been processed.");
-                showAlert("Done", "All images have been processed.");
-                openKeepDirectoryAndExit();
-            } else {
-                // Process 'maybe' directory
-                processDirectory(maybeDirectory);
-            }
+            onSessionComplete();
         }
     }
 
+    private void onSessionComplete() {
+        updateTitle(null);
+        showAlert("Session Complete", "All images in this session have been processed.");
+        showHomeScreen();
+    }
+
+    private void moveImportsToSessions() {
+        File[] files = importDirectory.listFiles((dir, name) -> name.toLowerCase().endsWith(".nef"));
+        if (files == null || files.length == 0) {
+            pruneEmptyDirectories(importDirectory);
+            return;
+        }
+
+        List<File> known = new ArrayList<>();
+        List<File> unknown = new ArrayList<>();
+        Map<File, Date> captureDates = new HashMap<>();
+
+        for (File file : files) {
+            Date captureDate = getCaptureDate(file);
+            if (captureDate != null) {
+                captureDates.put(file, captureDate);
+                known.add(file);
+            } else {
+                unknown.add(file);
+            }
+        }
+
+        known.sort(Comparator.comparing(captureDates::get));
+
+        Map<String, Integer> nextIndexByDate = getNextSessionIndexByDate();
+        List<List<File>> grouped = new ArrayList<>();
+        List<File> currentGroup = new ArrayList<>();
+        Date lastDate = null;
+
+        for (File file : known) {
+            Date captureDate = captureDates.get(file);
+            if (lastDate == null || captureDate.getTime() - lastDate.getTime() > SESSION_GAP_MS) {
+                if (!currentGroup.isEmpty()) {
+                    grouped.add(currentGroup);
+                }
+                currentGroup = new ArrayList<>();
+            }
+            currentGroup.add(file);
+            lastDate = captureDate;
+        }
+        if (!currentGroup.isEmpty()) {
+            grouped.add(currentGroup);
+        }
+
+        for (List<File> group : grouped) {
+            Date groupDate = captureDates.get(group.get(0));
+            String dateKey = formatDateKey(groupDate);
+            int nextIndex = nextIndexByDate.getOrDefault(dateKey, 0) + 1;
+            nextIndexByDate.put(dateKey, nextIndex);
+
+            File sessionFolder = new File(sessionDirectory, dateKey + "-" + nextIndex);
+            sessionFolder.mkdirs();
+            moveFiles(group, sessionFolder);
+        }
+
+        if (!unknown.isEmpty()) {
+            File unknownFolder = new File(sessionDirectory, "unknown");
+            unknownFolder.mkdirs();
+            moveFiles(unknown, unknownFolder);
+        }
+
+        pruneEmptyDirectories(importDirectory);
+    }
+
+    private Map<String, Integer> getNextSessionIndexByDate() {
+        Map<String, Integer> maxByDate = new HashMap<>();
+        File[] folders = sessionDirectory.listFiles(File::isDirectory);
+        if (folders == null) {
+            return maxByDate;
+        }
+
+        for (File folder : folders) {
+            String name = folder.getName();
+            if ("unknown".equalsIgnoreCase(name)) {
+                continue;
+            }
+            int dash = name.indexOf('-');
+            if (dash <= 0 || dash >= name.length() - 1) {
+                continue;
+            }
+            String dateKey = name.substring(0, dash);
+            String indexPart = name.substring(dash + 1);
+            if (!dateKey.matches("\\d{8}")) {
+                continue;
+            }
+            try {
+                int index = Integer.parseInt(indexPart);
+                maxByDate.put(dateKey, Math.max(maxByDate.getOrDefault(dateKey, 0), index));
+            } catch (NumberFormatException ignored) {
+                // Skip malformed folder names
+            }
+        }
+
+        return maxByDate;
+    }
+
+    private List<Session> loadSessionsFromDisk() {
+        File[] folders = sessionDirectory.listFiles(File::isDirectory);
+        if (folders == null || folders.length == 0) {
+            return Collections.emptyList();
+        }
+
+        List<Session> sessions = new ArrayList<>();
+
+        for (File folder : folders) {
+            File[] files = folder.listFiles((dir, name) -> name.toLowerCase().endsWith(".nef"));
+            if (files == null || files.length == 0) {
+                continue;
+            }
+
+            Session session = new Session();
+            session.folderName = folder.getName();
+            session.directory = folder;
+            Collections.addAll(session.files, files);
+            session.sampleFile = files[0];
+            session.unknown = "unknown".equalsIgnoreCase(folder.getName());
+
+            Date start = null;
+            Date end = null;
+
+            for (File file : files) {
+                Date captureDate = getCaptureDate(file);
+                if (captureDate == null) {
+                    continue;
+                }
+                if (start == null || captureDate.before(start)) {
+                    start = captureDate;
+                }
+                if (end == null || captureDate.after(end)) {
+                    end = captureDate;
+                }
+            }
+
+            session.start = start;
+            session.end = end;
+            sessions.add(session);
+        }
+
+        sessions.sort((a, b) -> {
+            if (a.unknown && !b.unknown) {
+                return 1;
+            }
+            if (!a.unknown && b.unknown) {
+                return -1;
+            }
+            if (a.start == null && b.start == null) {
+                return a.folderName.compareToIgnoreCase(b.folderName);
+            }
+            if (a.start == null) {
+                return 1;
+            }
+            if (b.start == null) {
+                return -1;
+            }
+            return b.start.compareTo(a.start);
+        });
+
+        return sessions;
+    }
+
+    private void moveFiles(List<File> files, File targetDirectory) {
+        for (File file : files) {
+            moveToDirectory(file, targetDirectory);
+        }
+    }
+
+    private void pruneEmptyDirectories(File root) {
+        if (root == null || !root.exists()) {
+            return;
+        }
+        try {
+            Files.walk(root.toPath())
+                    .sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        if (Files.isDirectory(path)) {
+                            try {
+                                try (var stream = Files.list(path)) {
+                                    if (!stream.findFirst().isPresent()) {
+                                        Files.deleteIfExists(path);
+                                    }
+                                }
+                            } catch (IOException e) {
+                                // Ignore cleanup failures
+                            }
+                        }
+                    });
+        } catch (IOException e) {
+            // Ignore cleanup failures
+        }
+    }
+
+    private String formatDateKey(Date date) {
+        SimpleDateFormat format = new SimpleDateFormat("yyyyMMdd", Locale.ENGLISH);
+        return format.format(date);
+    }
+
     private void preloadNextImages() {
-        // Remove preloaded images that are no longer needed
         preloadedImages.keySet().removeIf(key -> !imageFiles.contains(new File(key)));
         preloadedTempFiles.keySet().removeIf(key -> {
             if (!imageFiles.contains(new File(key))) {
@@ -362,9 +613,6 @@ public class Picknick extends Application {
             File nefFile = imageFiles.get(index);
             String fileKey = nefFile.getAbsolutePath();
             if (!preloadedImages.containsKey(fileKey)) {
-                System.out.println("Preloading image at index " + index + ": " + nefFile.getName());
-
-                // Run preload task
                 Task<Void> preloadTask = new Task<Void>() {
                     private Image image;
                     private File tempFile;
@@ -374,23 +622,20 @@ public class Picknick extends Application {
                     protected Void call() throws Exception {
                         tempFile = convertNEFToJPEG(nefFile);
                         image = new Image(tempFile.toURI().toString());
-                        captureDateTime = getCaptureDateTime(nefFile);
+                        Date captureDate = getCaptureDate(nefFile);
+                        captureDateTime = captureDate != null ? captureDate.toString() : null;
                         return null;
                     }
 
                     @Override
                     protected void succeeded() {
                         super.succeeded();
-                        // Check if the file is still in the list
                         if (imageFiles.contains(nefFile)) {
                             preloadedImages.put(fileKey, image);
                             preloadedTempFiles.put(fileKey, tempFile);
                             preloadedCaptureDates.put(fileKey, captureDateTime);
-                            System.out.println("Preloaded image: " + nefFile.getName());
                         } else {
-                            // File has been moved or removed; discard this preloaded image
                             tempFile.delete();
-                            System.out.println("Discarded preloaded image: " + nefFile.getName());
                         }
                     }
 
@@ -408,15 +653,14 @@ public class Picknick extends Application {
         }
     }
 
-    private String getCaptureDateTime(File imageFile) {
+    private Date getCaptureDate(File imageFile) {
         try {
             Metadata metadata = ImageMetadataReader.readMetadata(imageFile);
 
-            // NEF files may store date in different directories
             ExifIFD0Directory exifIFD0Directory = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
             ExifSubIFDDirectory exifSubIFDDirectory = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
 
-            java.util.Date captureDate = null;
+            Date captureDate = null;
 
             if (exifSubIFDDirectory != null) {
                 captureDate = exifSubIFDDirectory.getDateOriginal();
@@ -426,17 +670,32 @@ public class Picknick extends Application {
                 captureDate = exifIFD0Directory.getDate(ExifIFD0Directory.TAG_DATETIME);
             }
 
-            if (captureDate != null) {
-                System.out.println("Capture date: " + captureDate.toString());
-                return captureDate.toString();
-            } else {
-                System.out.println("Capture date not found in metadata.");
-            }
+            return captureDate;
         } catch (ImageProcessingException | IOException e) {
             System.out.println("Failed to read metadata from: " + imageFile.getName());
             e.printStackTrace();
         }
         return null;
+    }
+
+    private String formatSessionTitle(Session session) {
+        if (session.unknown) {
+            return "Unknown Session";
+        }
+        if (session.start == null || session.end == null) {
+            return session.folderName;
+        }
+        SimpleDateFormat dateFormat = new SimpleDateFormat("EEE MMM d, yyyy h:mm a", Locale.ENGLISH);
+        return dateFormat.format(session.start) + " - " + dateFormat.format(session.end);
+    }
+
+    private String formatSessionSubtitle(Session session) {
+        int count = session.files.size();
+        String base = count + " photo" + (count == 1 ? "" : "s");
+        if (session.folderName != null && !session.folderName.isBlank()) {
+            return base + " • " + session.folderName;
+        }
+        return base;
     }
 
     private void resetImageViewTransforms() {
@@ -451,32 +710,24 @@ public class Picknick extends Application {
 
     private void toggleZoom(MouseEvent event) {
         if (isZoomedIn) {
-            // Zoom out
             imageView.setScaleX(1);
             imageView.setScaleY(1);
             imageView.setTranslateX(0);
             imageView.setTranslateY(0);
             isZoomedIn = false;
-            System.out.println("Zoomed out");
         } else {
-            // Zoom in
-            // Get mouse position relative to imageView
             double mouseX = event.getX();
             double mouseY = event.getY();
 
-            // Get image dimensions
             double imageWidth = imageView.getBoundsInLocal().getWidth();
             double imageHeight = imageView.getBoundsInLocal().getHeight();
 
-            // Calculate the position of the mouse click relative to the image
             double relativeX = mouseX / imageWidth;
             double relativeY = mouseY / imageHeight;
 
-            // Apply scaling
             imageView.setScaleX(zoomScale);
             imageView.setScaleY(zoomScale);
 
-            // Calculate the new translation
             double newTranslateX = (0.5 - relativeX) * imageWidth;
             double newTranslateY = (0.5 - relativeY) * imageHeight;
 
@@ -484,19 +735,17 @@ public class Picknick extends Application {
             imageView.setTranslateY(newTranslateY);
 
             isZoomedIn = true;
-            System.out.println("Zoomed in at position (" + mouseX + ", " + mouseY + ")");
         }
     }
 
     private File convertNEFToJPEG(File nefFile) throws IOException {
-        // Create a temporary file for the JPEG image
         File jpegFile = File.createTempFile("temp_image", ".jpg");
         jpegFile.deleteOnExit();
 
         String[] command = {
                 dcrawPath,
-                "-e", // Extract embedded thumbnail
-                "-c", // Write image data to standard output
+                "-e",
+                "-c",
                 nefFile.getAbsolutePath()
         };
 
@@ -505,14 +754,11 @@ public class Picknick extends Application {
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);
         Process process = pb.start();
 
-        System.out.println("Converting NEF to JPEG: " + nefFile.getName());
-
         try {
             int exitCode = process.waitFor();
             if (exitCode != 0) {
                 throw new IOException("dcraw exited with code " + exitCode);
             }
-            System.out.println("Conversion successful: " + jpegFile.getAbsolutePath());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("dcraw process was interrupted", e);
@@ -522,8 +768,10 @@ public class Picknick extends Application {
     }
 
     private void keepImage() {
+        if (!isViewerActive || currentIndex >= imageFiles.size()) {
+            return;
+        }
         File nefFile = imageFiles.get(currentIndex);
-        System.out.println("Keeping image: " + nefFile.getName());
         moveToDirectory(nefFile, keepDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
@@ -532,8 +780,10 @@ public class Picknick extends Application {
     }
 
     private void skipImage() {
+        if (!isViewerActive || currentIndex >= imageFiles.size()) {
+            return;
+        }
         File nefFile = imageFiles.get(currentIndex);
-        System.out.println("Skipping image: " + nefFile.getName());
         moveToDirectory(nefFile, skipDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
@@ -542,8 +792,10 @@ public class Picknick extends Application {
     }
 
     private void maybeImage() {
+        if (!isViewerActive || currentIndex >= imageFiles.size()) {
+            return;
+        }
         File nefFile = imageFiles.get(currentIndex);
-        System.out.println("Marking image as maybe: " + nefFile.getName());
         moveToDirectory(nefFile, maybeDirectory);
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
@@ -560,28 +812,91 @@ public class Picknick extends Application {
         }
     }
 
+    private void clearPreloadedImages() {
+        for (File tempFile : preloadedTempFiles.values()) {
+            if (tempFile != null && tempFile.exists()) {
+                tempFile.delete();
+            }
+        }
+        preloadedImages.clear();
+        preloadedTempFiles.clear();
+        preloadedCaptureDates.clear();
+    }
+
     private void moveToDirectory(File file, File targetDirectory) {
         try {
+            if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+                showAlert("Error", "Failed to create directory: " + targetDirectory.getAbsolutePath());
+                return;
+            }
             Path targetPath = Paths.get(targetDirectory.getAbsolutePath(), file.getName());
-            Files.move(file.toPath(), targetPath, StandardCopyOption.REPLACE_EXISTING);
-            System.out.println("Moved " + file.getName() + " to " + targetDirectory.getName());
+            if (Files.exists(targetPath)) {
+                showAlert("Name Collision", "File already exists, skipping move: " + targetPath.getFileName());
+                return;
+            }
+            safeMoveWithVerify(file.toPath(), targetPath);
         } catch (IOException e) {
             e.printStackTrace();
             showAlert("Error", "Failed to move file: " + file.getName());
-            System.out.println("Failed to move file: " + file.getName());
         }
+    }
+
+    private void safeMoveWithVerify(Path sourcePath, Path targetPath) throws IOException {
+        long sourceSize = Files.size(sourcePath);
+        byte[] sourceHash = computeHash(sourcePath);
+
+        Path tempPath = targetPath.resolveSibling(targetPath.getFileName().toString() + ".tmp");
+        Files.copy(sourcePath, tempPath, StandardCopyOption.REPLACE_EXISTING);
+
+        long tempSize = Files.size(tempPath);
+        byte[] tempHash = computeHash(tempPath);
+
+        if (sourceSize != tempSize || !MessageDigest.isEqual(sourceHash, tempHash)) {
+            Files.deleteIfExists(tempPath);
+            throw new IOException("Verification failed for " + sourcePath.getFileName());
+        }
+
+        try {
+            Files.move(tempPath, targetPath, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        Files.deleteIfExists(sourcePath);
+    }
+
+    private byte[] computeHash(Path path) throws IOException {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("MD5");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IOException("MD5 not available", e);
+        }
+
+        try (DigestInputStream dis = new DigestInputStream(Files.newInputStream(path), digest)) {
+            byte[] buffer = new byte[8192];
+            while (dis.read(buffer) != -1) {
+                // DigestInputStream updates the digest automatically
+            }
+        }
+        return digest.digest();
     }
 
     private void deleteTempImageFile() {
         if (tempImageFile != null && tempImageFile.exists()) {
             tempImageFile.delete();
-            System.out.println("Deleted temporary image file: " + tempImageFile.getAbsolutePath());
         }
         tempImageFile = null;
     }
 
     private void updateTitle(String title) {
-        Platform.runLater(() -> primaryStage.setTitle("Picknick - " + title));
+        Platform.runLater(() -> {
+            if (title == null || title.isBlank()) {
+                primaryStage.setTitle("Picknick");
+            } else {
+                primaryStage.setTitle("Picknick - " + title);
+            }
+        });
     }
 
     private void showAlert(String title, String message) {
@@ -593,59 +908,116 @@ public class Picknick extends Application {
         });
     }
 
-    private void cleanupEmptyDirectories() {
-        deleteDirectoryIfEmpty(keepDirectory);
-        deleteDirectoryIfEmpty(skipDirectory);
-        deleteDirectoryIfEmpty(maybeDirectory);
-        System.out.println("Cleaned up empty directories.");
-    }
-
-    private void deleteDirectoryIfEmpty(File directory) {
-        if (directory.isDirectory()) {
-            File[] files = directory.listFiles();
-            if (files == null || files.length == 0) {
-                boolean deleted = directory.delete();
-                if (deleted) {
-                    System.out.println("Deleted empty directory: " + directory.getAbsolutePath());
-                } else {
-                    System.out.println("Failed to delete directory: " + directory.getAbsolutePath());
-                }
-            }
-        }
-    }
-
-    private void openKeepDirectoryAndExit() {
-        if (Desktop.isDesktopSupported()) {
-            try {
-                System.out.println("Opening keep directory: " + keepDirectory.getAbsolutePath());
-                Desktop.getDesktop().open(keepDirectory);
-            } catch (IOException e) {
-                e.printStackTrace();
-                System.out.println("Failed to open keep directory.");
-            }
-        } else {
-            System.out.println("Desktop is not supported. Cannot open keep directory.");
-        }
-        System.exit(0);
+    private void toggleFullScreen() {
+        boolean isFullScreen = primaryStage.isFullScreen();
+        primaryStage.setFullScreen(!isFullScreen);
     }
 
     @Override
     public void stop() throws Exception {
         super.stop();
         preloadExecutor.shutdownNow();
+        thumbnailExecutor.shutdownNow();
+        for (File tempFile : sessionThumbnailTempFiles) {
+            if (tempFile != null && tempFile.exists()) {
+                tempFile.delete();
+            }
+        }
     }
 
-    // New methods for rotation
     private void rotateClockwise() {
         currentRotationAngle = (currentRotationAngle + 90) % 360;
         imageView.setRotate(currentRotationAngle);
-        System.out.println("Rotated clockwise to " + currentRotationAngle + " degrees");
     }
 
     private void rotateCounterClockwise() {
         currentRotationAngle = (currentRotationAngle - 90) % 360;
         imageView.setRotate(currentRotationAngle);
-        System.out.println("Rotated counter-clockwise to " + currentRotationAngle + " degrees");
+    }
+
+    private Image loadSessionThumbnail(Session session) {
+        if (session == null || session.sampleFile == null) {
+            return null;
+        }
+        String key = session.sampleFile.getAbsolutePath();
+        Image cached = sessionThumbnailCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            File tempFile = convertNEFToJPEG(session.sampleFile);
+            sessionThumbnailTempFiles.add(tempFile);
+            Image image = new Image(tempFile.toURI().toString(), 200, 0, true, true);
+            sessionThumbnailCache.put(key, image);
+            return image;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    private class SessionCell extends ListCell<Session> {
+        private final HBox container = new HBox(12);
+        private final ImageView thumbnail = new ImageView();
+        private final VBox textBox = new VBox(4);
+        private final Label title = new Label();
+        private final Label subtitle = new Label();
+
+        SessionCell() {
+            thumbnail.setFitWidth(180);
+            thumbnail.setFitHeight(110);
+            thumbnail.setPreserveRatio(true);
+            title.setStyle("-fx-font-weight: bold;");
+            subtitle.setStyle("-fx-text-fill: #666;");
+            textBox.getChildren().addAll(title, subtitle);
+            textBox.setAlignment(Pos.CENTER_LEFT);
+            container.getChildren().addAll(thumbnail, textBox);
+            container.setAlignment(Pos.CENTER_LEFT);
+        }
+
+        @Override
+        protected void updateItem(Session session, boolean empty) {
+            super.updateItem(session, empty);
+            if (empty || session == null) {
+                setGraphic(null);
+                return;
+            }
+
+            title.setText(formatSessionTitle(session));
+            subtitle.setText(formatSessionSubtitle(session));
+            thumbnail.setImage(null);
+
+            if (session.sampleFile != null) {
+                String key = session.sampleFile.getAbsolutePath();
+                Image cached = sessionThumbnailCache.get(key);
+                if (cached != null) {
+                    thumbnail.setImage(cached);
+                } else {
+                    thumbnailExecutor.submit(() -> {
+                        Image image = loadSessionThumbnail(session);
+                        if (image != null) {
+                            Platform.runLater(() -> {
+                                if (getItem() == session) {
+                                    thumbnail.setImage(image);
+                                }
+                            });
+                        }
+                    });
+                }
+            }
+
+            setGraphic(container);
+        }
+    }
+
+    private static class Session {
+        private final List<File> files = new ArrayList<>();
+        private Date start;
+        private Date end;
+        private File sampleFile;
+        private File directory;
+        private String folderName;
+        private boolean unknown = false;
     }
 
     public static void main(String[] args) {
