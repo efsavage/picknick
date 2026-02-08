@@ -86,9 +86,9 @@ public class Picknick extends Application {
     private File rootDirectory;
     private File importDirectory;
     private File sessionDirectory;
-    private File keepDirectory;
-    private File skipDirectory;
-    private File maybeDirectory;
+    private File sessionKeepDirectory;
+    private File sessionSkipDirectory;
+    private File sessionMaybeDirectory;
 
     private double dragStartX;
     private double dragStartY;
@@ -128,10 +128,6 @@ public class Picknick extends Application {
         rootDirectory = new File(rootDirectoryPath);
         importDirectory = new File(rootDirectory, "import");
         sessionDirectory = new File(rootDirectory, "session");
-        keepDirectory = new File(rootDirectory, "keep");
-        skipDirectory = new File(rootDirectory, "skip");
-        maybeDirectory = new File(rootDirectory, "maybe");
-
         if (!rootDirectory.exists()) {
             rootDirectory.mkdirs();
         }
@@ -139,9 +135,6 @@ public class Picknick extends Application {
             importDirectory.mkdirs();
         }
         sessionDirectory.mkdirs();
-        keepDirectory.mkdirs();
-        skipDirectory.mkdirs();
-        maybeDirectory.mkdirs();
     }
 
     private void setupViewerToolBar() {
@@ -329,6 +322,7 @@ public class Picknick extends Application {
 
         isViewerActive = true;
         currentSession = session;
+        initSessionDirectories(session);
         imageFiles.clear();
         imageFiles.addAll(session.files);
         currentIndex = 0;
@@ -409,7 +403,9 @@ public class Picknick extends Application {
                         Throwable e = getException();
                         e.printStackTrace();
                         System.out.println("Error converting NEF to JPEG: " + nefFile.getName());
-                        moveToDirectory(nefFile, skipDirectory);
+                        if (sessionSkipDirectory != null) {
+                            moveToDirectory(nefFile, sessionSkipDirectory);
+                        }
                         deleteTempImageFile();
                         imageFiles.remove(currentIndex);
                         showImage();
@@ -435,8 +431,18 @@ public class Picknick extends Application {
         try {
             Files.walk(importDirectory.toPath())
                     .filter(path -> Files.isRegularFile(path))
-                    .filter(path -> path.toString().toLowerCase().endsWith(".nef"))
-                    .forEach(path -> allFiles.add(path.toFile()));
+                    .forEach(path -> {
+                        String filename = path.getFileName().toString().toLowerCase();
+                        if (filename.equals("nc_fllst.dat")) {
+                            try {
+                                Files.deleteIfExists(path);
+                            } catch (IOException e) {
+                                System.out.println("Failed to delete NC_FLLST.DAT: " + path);
+                            }
+                        } else if (filename.endsWith(".nef")) {
+                            allFiles.add(path.toFile());
+                        }
+                    });
         } catch (IOException e) {
             showAlert("Error", "Failed to scan import folder: " + e.getMessage());
         }
@@ -600,8 +606,25 @@ public class Picknick extends Application {
 
     private void moveFiles(List<File> files, File targetDirectory) {
         for (File file : files) {
-            moveToDirectory(file, targetDirectory);
+            if (!moveToDirectory(file, targetDirectory)) {
+                System.out.println("Skipping file (missing or failed move): " + file.getAbsolutePath());
+            }
         }
+    }
+
+    private void initSessionDirectories(Session session) {
+        if (session == null || session.directory == null) {
+            sessionKeepDirectory = null;
+            sessionSkipDirectory = null;
+            sessionMaybeDirectory = null;
+            return;
+        }
+        sessionKeepDirectory = new File(session.directory, "keep");
+        sessionSkipDirectory = new File(session.directory, "skip");
+        sessionMaybeDirectory = new File(session.directory, "maybe");
+        sessionKeepDirectory.mkdirs();
+        sessionSkipDirectory.mkdirs();
+        sessionMaybeDirectory.mkdirs();
     }
 
     private void pruneEmptyDirectories(File root) {
@@ -815,7 +838,9 @@ public class Picknick extends Application {
             return;
         }
         File nefFile = imageFiles.get(currentIndex);
-        moveToDirectory(nefFile, keepDirectory);
+        if (sessionKeepDirectory != null) {
+            moveToDirectory(nefFile, sessionKeepDirectory);
+        }
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
         removePreloadedImage(nefFile.getAbsolutePath());
@@ -827,7 +852,9 @@ public class Picknick extends Application {
             return;
         }
         File nefFile = imageFiles.get(currentIndex);
-        moveToDirectory(nefFile, skipDirectory);
+        if (sessionSkipDirectory != null) {
+            moveToDirectory(nefFile, sessionSkipDirectory);
+        }
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
         removePreloadedImage(nefFile.getAbsolutePath());
@@ -839,7 +866,9 @@ public class Picknick extends Application {
             return;
         }
         File nefFile = imageFiles.get(currentIndex);
-        moveToDirectory(nefFile, maybeDirectory);
+        if (sessionMaybeDirectory != null) {
+            moveToDirectory(nefFile, sessionMaybeDirectory);
+        }
         imageFiles.remove(currentIndex);
         deleteTempImageFile();
         removePreloadedImage(nefFile.getAbsolutePath());
@@ -866,25 +895,29 @@ public class Picknick extends Application {
         preloadedCaptureDates.clear();
     }
 
-    private void moveToDirectory(File file, File targetDirectory) {
+    private boolean moveToDirectory(File file, File targetDirectory) {
         try {
             if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
                 showAlert("Error", "Failed to create directory: " + targetDirectory.getAbsolutePath());
-                return;
+                return false;
             }
             Path targetPath = Paths.get(targetDirectory.getAbsolutePath(), file.getName());
             if (Files.exists(targetPath)) {
                 showAlert("Name Collision", "File already exists, skipping move: " + targetPath.getFileName());
-                return;
+                return false;
             }
-            safeMoveWithVerify(file.toPath(), targetPath);
+            return safeMoveWithVerify(file.toPath(), targetPath);
         } catch (IOException e) {
             e.printStackTrace();
             showAlert("Error", "Failed to move file: " + file.getName());
+            return false;
         }
     }
 
-    private void safeMoveWithVerify(Path sourcePath, Path targetPath) throws IOException {
+    private boolean safeMoveWithVerify(Path sourcePath, Path targetPath) throws IOException {
+        if (!Files.exists(sourcePath)) {
+            return false;
+        }
         long sourceSize = Files.size(sourcePath);
         byte[] sourceHash = computeHash(sourcePath);
 
@@ -906,6 +939,7 @@ public class Picknick extends Application {
         }
 
         Files.deleteIfExists(sourcePath);
+        return true;
     }
 
     private byte[] computeHash(Path path) throws IOException {
