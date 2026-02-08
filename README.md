@@ -91,8 +91,8 @@ To create an installer with a Start Menu shortcut, use the PowerShell script:
     .\\scripts\\windows\\package.ps1
     ```
 
-    -   This creates an MSI by default in `target\\installer`.
-    -   For an EXE installer:
+    -   This creates an EXE by default in `target\\installer`.
+    -   For an MSI installer (requires WiX Toolset on PATH):
 
     ```powershell
     .\\scripts\\windows\\package.ps1 -Type exe

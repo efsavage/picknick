@@ -1,6 +1,6 @@
 param(
     [ValidateSet("msi", "exe")]
-    [string]$Type = "msi"
+    [string]$Type = "exe"
 )
 
 Set-StrictMode -Version Latest
