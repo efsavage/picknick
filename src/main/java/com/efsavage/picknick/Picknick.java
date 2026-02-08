@@ -11,15 +11,18 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.TextField;
 import javafx.scene.control.ToolBar;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -49,6 +52,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.prefs.Preferences;
+import java.io.BufferedWriter;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+
+import org.tomlj.Toml;
+import org.tomlj.TomlParseResult;
 
 import com.drew.imaging.ImageMetadataReader;
 import com.drew.imaging.ImageProcessingException;
@@ -79,6 +89,7 @@ public class Picknick extends Application {
     private ProgressIndicator homeProgress;
     private DoubleBinding viewerFitWidth;
     private DoubleBinding viewerFitHeight;
+    private CheckBox showArchivedCheckBox;
 
     private boolean isZoomedIn = false;
     private double zoomScale = 2.0;
@@ -114,6 +125,7 @@ public class Picknick extends Application {
     private static final String PREF_WINDOW_MAX = "window.maximized";
     private static final String PREF_WINDOW_FS = "window.fullscreen";
     private static final String PREF_WINDOW_MIN = "window.iconified";
+    private static final String SESSION_METADATA_FILE = "session.toml";
 
     @Override
     public void start(Stage primaryStage) {
@@ -191,7 +203,10 @@ public class Picknick extends Application {
         Button splitButton = new Button("Split Session");
         splitButton.setOnAction(e -> showAlert("Split Session", "Split UI coming soon."));
 
-        homeToolBar = new ToolBar(rescanButton, mergeButton, splitButton);
+        showArchivedCheckBox = new CheckBox("Show archived");
+        showArchivedCheckBox.setOnAction(e -> refreshSessions());
+
+        homeToolBar = new ToolBar(rescanButton, mergeButton, splitButton, showArchivedCheckBox);
     }
 
     private void setupImageViewInteractions() {
@@ -359,10 +374,59 @@ public class Picknick extends Application {
         HBox progressRow = new HBox(8, progressBar, percentLabel);
         progressRow.setAlignment(Pos.CENTER_LEFT);
 
-        VBox card = new VBox(8, thumbnail, title, subtitle, progressRow);
+        Button archiveButton = new Button(session.archived ? "Unarchive" : "Archive");
+        archiveButton.setOnAction(event -> {
+            toggleArchive(session);
+            event.consume();
+        });
+
+        HBox actionRow = new HBox(8, archiveButton);
+        actionRow.setAlignment(Pos.CENTER_LEFT);
+
+        VBox card = new VBox(8, thumbnail, title, subtitle, progressRow, actionRow);
         card.setPadding(new Insets(12));
         card.setPrefWidth(240);
         card.setStyle("-fx-background-color: #f7f7f7; -fx-background-radius: 10; -fx-border-radius: 10; -fx-border-color: #e0e0e0;");
+
+        title.setOnMouseClicked(event -> {
+            if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) {
+                startRenameSession(card, title, session);
+                event.consume();
+            }
+        });
+
+        card.setOnDragDetected(event -> {
+            if (event.getButton() == MouseButton.PRIMARY) {
+                var db = card.startDragAndDrop(TransferMode.MOVE);
+                var content = new javafx.scene.input.ClipboardContent();
+                if (session.directory != null) {
+                    content.putString(session.directory.getAbsolutePath());
+                    db.setContent(content);
+                }
+                event.consume();
+            }
+        });
+
+        card.setOnDragOver(event -> {
+            if (event.getGestureSource() != card && event.getDragboard().hasString()) {
+                event.acceptTransferModes(TransferMode.MOVE);
+            }
+            event.consume();
+        });
+
+        card.setOnDragDropped(event -> {
+            var db = event.getDragboard();
+            boolean success = false;
+            if (db.hasString() && session.directory != null) {
+                File sourceDir = new File(db.getString());
+                if (!sourceDir.equals(session.directory)) {
+                    mergeSessions(sourceDir, session);
+                    success = true;
+                }
+            }
+            event.setDropCompleted(success);
+            event.consume();
+        });
 
         if (session.sampleFile != null) {
             String key = session.sampleFile.getAbsolutePath();
@@ -388,9 +452,93 @@ public class Picknick extends Application {
         return card;
     }
 
+    private void startRenameSession(VBox card, Label title, Session session) {
+        if (session == null || session.directory == null) {
+            return;
+        }
+        TextField editor = new TextField(session.displayName != null ? session.displayName : session.folderName);
+        editor.setPrefWidth(title.getWidth() > 0 ? title.getWidth() : 200);
+
+        int titleIndex = card.getChildren().indexOf(title);
+        if (titleIndex < 0) {
+            return;
+        }
+        card.getChildren().set(titleIndex, editor);
+        editor.requestFocus();
+        editor.selectAll();
+
+        Runnable commit = () -> {
+            String newName = editor.getText() != null ? editor.getText().trim() : "";
+            if (newName.isBlank()) {
+                newName = session.folderName;
+            }
+            SessionMetadata metadata = readSessionMetadata(session.directory);
+            writeSessionMetadata(session.directory, newName, session.totalCount, metadata.archived);
+            refreshSessions();
+        };
+
+        editor.setOnAction(e -> commit.run());
+        editor.focusedProperty().addListener((obs, wasFocused, isFocused) -> {
+            if (!isFocused) {
+                commit.run();
+            }
+        });
+    }
+
+    private void mergeSessions(File sourceDir, Session targetSession) {
+        if (sourceDir == null || targetSession == null || targetSession.directory == null) {
+            return;
+        }
+        File targetDir = targetSession.directory;
+
+        moveFiles(listMediaFiles(sourceDir), targetDir);
+        moveFiles(listMediaFiles(new File(sourceDir, "keep")), new File(targetDir, "keep"));
+        moveFiles(listMediaFiles(new File(sourceDir, "skip")), new File(targetDir, "skip"));
+        moveFiles(listMediaFiles(new File(sourceDir, "maybe")), new File(targetDir, "maybe"));
+
+        deleteSessionMetadataFile(sourceDir);
+        pruneEmptyDirectories(sourceDir);
+        deleteDirectoryIfEmpty(sourceDir);
+
+        int totalCount = listMediaFiles(targetDir).size()
+                + listMediaFiles(new File(targetDir, "keep")).size()
+                + listMediaFiles(new File(targetDir, "skip")).size()
+                + listMediaFiles(new File(targetDir, "maybe")).size();
+        SessionMetadata metadata = readSessionMetadata(targetDir);
+        writeSessionMetadata(targetDir, metadata.name, totalCount, metadata.archived);
+        refreshSessions();
+    }
+
+    private void deleteDirectoryIfEmpty(File directory) {
+        if (directory == null || !directory.isDirectory()) {
+            return;
+        }
+        File[] files = directory.listFiles();
+        if (files == null || files.length == 0) {
+            boolean deleted = directory.delete();
+            if (!deleted) {
+                System.out.println("Failed to delete directory: " + directory.getAbsolutePath());
+            }
+        }
+    }
+
+    private void deleteSessionMetadataFile(File directory) {
+        if (directory == null) {
+            return;
+        }
+        File metadataFile = new File(directory, SESSION_METADATA_FILE);
+        if (metadataFile.exists()) {
+            try {
+                Files.deleteIfExists(metadataFile.toPath());
+            } catch (IOException e) {
+                System.out.println("Failed to delete session metadata: " + metadataFile.getAbsolutePath());
+            }
+        }
+    }
+
     private List<Session> rescanSessions() {
         moveImportsToSessions();
-        return loadSessionsFromDisk();
+        return loadSessionsFromDisk(showArchivedCheckBox != null && showArchivedCheckBox.isSelected());
     }
 
     private void startSession(Session session) {
@@ -590,12 +738,14 @@ public class Picknick extends Application {
             File sessionFolder = new File(sessionDirectory, dateKey + "-" + nextIndex);
             sessionFolder.mkdirs();
             moveFiles(group, sessionFolder);
+            writeSessionMetadata(sessionFolder, dateKey + "-" + nextIndex, group.size());
         }
 
         if (!unknown.isEmpty()) {
             File unknownFolder = new File(sessionDirectory, "unknown");
             unknownFolder.mkdirs();
             moveFiles(unknown, unknownFolder);
+            writeSessionMetadata(unknownFolder, "unknown", unknown.size());
         }
 
         pruneEmptyDirectories(importDirectory);
@@ -633,7 +783,7 @@ public class Picknick extends Application {
         return maxByDate;
     }
 
-    private List<Session> loadSessionsFromDisk() {
+    private List<Session> loadSessionsFromDisk(boolean includeArchived) {
         File[] folders = sessionDirectory.listFiles(File::isDirectory);
         if (folders == null || folders.length == 0) {
             return Collections.emptyList();
@@ -642,6 +792,14 @@ public class Picknick extends Application {
         List<Session> sessions = new ArrayList<>();
 
         for (File folder : folders) {
+            SessionMetadata metadata = readSessionMetadata(folder);
+            if (metadata.totalCount == 0) {
+                metadata.totalCount = 0;
+            }
+            if (metadata.archived && !includeArchived) {
+                continue;
+            }
+
             List<File> rootFiles = listMediaFiles(folder);
             File keepDir = new File(folder, "keep");
             File skipDir = new File(folder, "skip");
@@ -658,11 +816,14 @@ public class Picknick extends Application {
 
             Session session = new Session();
             session.folderName = folder.getName();
+            session.displayName = metadata.name != null ? metadata.name : folder.getName();
             session.directory = folder;
             session.files.addAll(rootFiles);
             session.unknown = "unknown".equalsIgnoreCase(folder.getName());
-            session.totalCount = totalCount;
             session.remainingCount = rootFiles.size();
+            session.archived = metadata.archived;
+            session.createdAt = metadata.createdAt;
+            session.totalCount = totalCount;
 
             if (!rootFiles.isEmpty()) {
                 session.sampleFile = rootFiles.get(0);
@@ -788,6 +949,77 @@ public class Picknick extends Application {
         return result;
     }
 
+    private void toggleArchive(Session session) {
+        if (session == null || session.directory == null) {
+            return;
+        }
+        SessionMetadata metadata = readSessionMetadata(session.directory);
+        metadata.archived = !metadata.archived;
+        writeSessionMetadata(session.directory, metadata.name != null ? metadata.name : session.folderName, session.totalCount, metadata.archived);
+        refreshSessions();
+    }
+
+    private SessionMetadata readSessionMetadata(File sessionFolder) {
+        SessionMetadata metadata = new SessionMetadata();
+        if (sessionFolder == null) {
+            return metadata;
+        }
+        File metadataFile = new File(sessionFolder, SESSION_METADATA_FILE);
+        if (!metadataFile.exists()) {
+            metadata.name = sessionFolder.getName();
+            metadata.createdAt = Instant.now().toString();
+            return metadata;
+        }
+
+        try {
+            TomlParseResult result = Toml.parse(metadataFile.toPath());
+            metadata.name = result.getString("name");
+            metadata.createdAt = result.getString("created_at");
+            metadata.archived = Boolean.TRUE.equals(result.getBoolean("archived"));
+        } catch (Exception e) {
+            System.out.println("Failed to read session metadata: " + metadataFile.getAbsolutePath());
+        }
+        if (metadata.name == null) {
+            metadata.name = sessionFolder.getName();
+        }
+        if (metadata.createdAt == null) {
+            metadata.createdAt = Instant.now().toString();
+        }
+        return metadata;
+    }
+
+    private void writeSessionMetadata(File sessionFolder, String name, int totalCount) {
+        writeSessionMetadata(sessionFolder, name, totalCount, null);
+    }
+
+    private void writeSessionMetadata(File sessionFolder, String name, int totalCount, Boolean archivedOverride) {
+        if (sessionFolder == null) {
+            return;
+        }
+        SessionMetadata existing = readSessionMetadata(sessionFolder);
+        SessionMetadata metadata = new SessionMetadata();
+        metadata.name = name != null ? name : existing.name;
+        metadata.createdAt = existing.createdAt != null ? existing.createdAt : Instant.now().toString();
+        metadata.archived = archivedOverride != null ? archivedOverride : existing.archived;
+        metadata.totalCount = totalCount > 0 ? totalCount : existing.totalCount;
+
+        File metadataFile = new File(sessionFolder, SESSION_METADATA_FILE);
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(Files.newOutputStream(metadataFile.toPath()), StandardCharsets.UTF_8))) {
+            writer.write("name = \"" + metadata.name + "\"");
+            writer.newLine();
+            writer.write("created_at = \"" + metadata.createdAt + "\"");
+            writer.newLine();
+            writer.write("archived = " + metadata.archived);
+            writer.newLine();
+            if (metadata.totalCount > 0) {
+                writer.write("total_count = " + metadata.totalCount);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            System.out.println("Failed to write session metadata: " + metadataFile.getAbsolutePath());
+        }
+    }
+
     private String formatDateKey(Date date) {
         SimpleDateFormat format = new SimpleDateFormat("yyyyMMdd", Locale.ENGLISH);
         return format.format(date);
@@ -890,7 +1122,7 @@ public class Picknick extends Application {
             return "Unknown Session";
         }
         if (session.start == null || session.end == null) {
-            return session.folderName;
+            return session.displayName != null ? session.displayName : session.folderName;
         }
         SimpleDateFormat dateFormat = new SimpleDateFormat("EEE MMM d, yyyy h:mm a", Locale.ENGLISH);
         return dateFormat.format(session.start) + " - " + dateFormat.format(session.end);
@@ -903,8 +1135,8 @@ public class Picknick extends Application {
         } else {
             base = session.files.size() + " remaining";
         }
-        if (session.folderName != null && !session.folderName.isBlank()) {
-            return base + " • " + session.folderName;
+        if (session.displayName != null && !session.displayName.isBlank()) {
+            return base + " • " + session.displayName;
         }
         return base;
     }
@@ -1268,9 +1500,19 @@ public class Picknick extends Application {
         private File sampleFile;
         private File directory;
         private String folderName;
+        private String displayName;
         private boolean unknown = false;
         private int totalCount;
         private int remainingCount;
+        private boolean archived;
+        private String createdAt;
+    }
+
+    private static class SessionMetadata {
+        private String name;
+        private String createdAt;
+        private boolean archived;
+        private int totalCount;
     }
 
     public static void main(String[] args) {
