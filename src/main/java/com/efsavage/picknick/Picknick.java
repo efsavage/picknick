@@ -524,7 +524,7 @@ public class Picknick extends Application {
         mergeSessionsWithProgress(sourceDir, targetSession, null);
     }
 
-    private void mergeSessionsWithProgress(File sourceDir, Session targetSession, Task<?> task) {
+    private void mergeSessionsWithProgress(File sourceDir, Session targetSession, MergeTask task) {
         if (sourceDir == null || targetSession == null || targetSession.directory == null) {
             return;
         }
@@ -539,8 +539,8 @@ public class Picknick extends Application {
 
         int total = rootFiles.size() + keepFiles.size() + skipFiles.size() + maybeFiles.size();
         if (task != null) {
-            task.updateProgress(0, Math.max(1, total));
-            task.updateMessage("Merging " + total + " files...");
+            task.reportProgress(0, Math.max(1, total));
+            task.reportMessage("Merging " + total + " files...");
         }
 
         int moved = 0;
@@ -564,13 +564,7 @@ public class Picknick extends Application {
     }
 
     private void runMergeAsync(File sourceDir, Session targetSession) {
-        Task<Void> mergeTask = new Task<>() {
-            @Override
-            protected Void call() {
-                mergeSessionsWithProgress(sourceDir, targetSession, this);
-                return null;
-            }
-        };
+        MergeTask mergeTask = new MergeTask(sourceDir, targetSession);
 
         Stage dialog = showMergeDialog(mergeTask);
         mergeTask.setOnSucceeded(event -> {
@@ -1137,12 +1131,12 @@ public class Picknick extends Application {
         }
     }
 
-    private int moveFilesWithProgress(List<File> files, File targetDirectory, Task<?> task, int moved, int total, String label) {
+    private int moveFilesWithProgress(List<File> files, File targetDirectory, MergeTask task, int moved, int total, String label) {
         if (files.isEmpty()) {
             return moved;
         }
         if (task != null) {
-            task.updateMessage(label + " (" + moved + "/" + total + ")");
+            task.reportMessage(label + " (" + moved + "/" + total + ")");
         }
         for (File file : files) {
             if (!moveToDirectory(file, targetDirectory)) {
@@ -1150,8 +1144,8 @@ public class Picknick extends Application {
             }
             moved++;
             if (task != null) {
-                task.updateProgress(moved, Math.max(1, total));
-                task.updateMessage(label + " (" + moved + "/" + total + ")");
+                task.reportProgress(moved, Math.max(1, total));
+                task.reportMessage(label + " (" + moved + "/" + total + ")");
             }
         }
         return moved;
@@ -1806,6 +1800,30 @@ public class Picknick extends Application {
         private String createdAt;
         private boolean archived;
         private int totalCount;
+    }
+
+    private class MergeTask extends Task<Void> {
+        private final File sourceDir;
+        private final Session targetSession;
+
+        private MergeTask(File sourceDir, Session targetSession) {
+            this.sourceDir = sourceDir;
+            this.targetSession = targetSession;
+        }
+
+        @Override
+        protected Void call() {
+            mergeSessionsWithProgress(sourceDir, targetSession, this);
+            return null;
+        }
+
+        private void reportProgress(long workDone, long max) {
+            updateProgress(workDone, max);
+        }
+
+        private void reportMessage(String message) {
+            updateMessage(message);
+        }
     }
 
     private static class GalleryItem {
