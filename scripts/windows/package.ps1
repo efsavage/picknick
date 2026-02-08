@@ -64,19 +64,24 @@ $OutDir = Join-Path $RepoRoot "target\installer"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 Write-Host "Packaging $Type installer..."
-& $JPackage `
-    --type $Type `
-    --input $InputDir `
-    --main-jar $MainJar.Name `
-    --main-class "com.efsavage.picknick.Picknick" `
-    --module-path $JavaFxModulePath `
-    --add-modules "javafx.controls,javafx.fxml" `
-    --name "Picknick" `
-    --vendor "Eric F. Savage" `
-    --icon $IconPath `
-    --dest $OutDir `
-    --win-menu `
-    --win-shortcut
+$Args = @(
+    "--type", $Type,
+    "--input", $InputDir,
+    "--main-jar", $MainJar.Name,
+    "--main-class", "com.efsavage.picknick.Picknick",
+    "--module-path", $JavaFxModulePath,
+    "--add-modules", "javafx.controls,javafx.fxml",
+    "--name", "Picknick",
+    "--vendor", "Eric F. Savage",
+    "--icon", $IconPath,
+    "--dest", $OutDir
+)
+
+if ($Type -ne "app-image") {
+    $Args += @("--win-menu", "--win-shortcut")
+}
+
+& $JPackage @Args
 
 if ($Type -eq "app-image") {
     $AppDir = Join-Path $OutDir "Picknick"
