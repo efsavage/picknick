@@ -47,6 +47,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.prefs.Preferences;
 
 import com.drew.imaging.ImageMetadataReader;
 import com.drew.imaging.ImageProcessingException;
@@ -102,6 +103,14 @@ public class Picknick extends Application {
 
     private boolean isViewerActive = false;
     private Session currentSession;
+    private final Preferences preferences = Preferences.userNodeForPackage(Picknick.class);
+    private static final String PREF_WINDOW_X = "window.x";
+    private static final String PREF_WINDOW_Y = "window.y";
+    private static final String PREF_WINDOW_W = "window.w";
+    private static final String PREF_WINDOW_H = "window.h";
+    private static final String PREF_WINDOW_MAX = "window.maximized";
+    private static final String PREF_WINDOW_FS = "window.fullscreen";
+    private static final String PREF_WINDOW_MIN = "window.iconified";
 
     @Override
     public void start(Stage primaryStage) {
@@ -120,6 +129,7 @@ public class Picknick extends Application {
         setupViewerBindings();
 
         primaryStage.setScene(scene);
+        restoreWindowState(primaryStage);
         showHomeScreen();
         primaryStage.show();
     }
@@ -1010,9 +1020,42 @@ public class Picknick extends Application {
         primaryStage.setFullScreen(!isFullScreen);
     }
 
+    private void restoreWindowState(Stage stage) {
+        double x = preferences.getDouble(PREF_WINDOW_X, Double.NaN);
+        double y = preferences.getDouble(PREF_WINDOW_Y, Double.NaN);
+        double w = preferences.getDouble(PREF_WINDOW_W, 900);
+        double h = preferences.getDouble(PREF_WINDOW_H, 650);
+        boolean maximized = preferences.getBoolean(PREF_WINDOW_MAX, false);
+        boolean fullscreen = preferences.getBoolean(PREF_WINDOW_FS, false);
+        boolean iconified = preferences.getBoolean(PREF_WINDOW_MIN, false);
+
+        if (!Double.isNaN(x) && !Double.isNaN(y)) {
+            stage.setX(x);
+            stage.setY(y);
+        }
+        stage.setWidth(w);
+        stage.setHeight(h);
+        stage.setMaximized(maximized);
+        stage.setFullScreen(fullscreen);
+        stage.setIconified(false);
+    }
+
+    private void saveWindowState(Stage stage) {
+        preferences.putDouble(PREF_WINDOW_X, stage.getX());
+        preferences.putDouble(PREF_WINDOW_Y, stage.getY());
+        preferences.putDouble(PREF_WINDOW_W, stage.getWidth());
+        preferences.putDouble(PREF_WINDOW_H, stage.getHeight());
+        preferences.putBoolean(PREF_WINDOW_MAX, stage.isMaximized());
+        preferences.putBoolean(PREF_WINDOW_FS, stage.isFullScreen());
+        preferences.putBoolean(PREF_WINDOW_MIN, stage.isIconified());
+    }
+
     @Override
     public void stop() throws Exception {
         super.stop();
+        if (primaryStage != null) {
+            saveWindowState(primaryStage);
+        }
         preloadExecutor.shutdownNow();
         thumbnailExecutor.shutdownNow();
         for (File tempFile : sessionThumbnailTempFiles) {
