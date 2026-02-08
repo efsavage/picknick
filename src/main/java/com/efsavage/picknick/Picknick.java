@@ -977,6 +977,25 @@ public class Picknick extends Application {
         return card;
     }
 
+    private Image loadThumbnailForFile(File file, int targetWidth) {
+        if (file == null) {
+            return null;
+        }
+        try {
+            File sourceFile = file;
+            File tempFile = null;
+            if (!isJpeg(file)) {
+                tempFile = convertNEFToJPEG(file);
+                sessionThumbnailTempFiles.add(tempFile);
+                sourceFile = tempFile;
+            }
+            return new Image(sourceFile.toURI().toString(), targetWidth, 0, true, true);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     private Map<String, Integer> getNextSessionIndexByDate() {
         Map<String, Integer> maxByDate = new HashMap<>();
         File[] folders = sessionDirectory.listFiles(File::isDirectory);
@@ -1787,6 +1806,23 @@ public class Picknick extends Application {
         private String createdAt;
         private boolean archived;
         private int totalCount;
+    }
+
+    private static class GalleryItem {
+        private final File file;
+        private final MediaState state;
+
+        private GalleryItem(File file, MediaState state) {
+            this.file = file;
+            this.state = state;
+        }
+    }
+
+    private enum MediaState {
+        UNREVIEWED,
+        KEEP,
+        MAYBE,
+        SKIP
     }
 
     public static void main(String[] args) {
