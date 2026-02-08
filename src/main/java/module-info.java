@@ -2,7 +2,7 @@ module com.efsavage.picknick {
 	requires javafx.controls;
 	requires javafx.fxml;
 	requires java.desktop;
-	requires com.drew.metadata;
+	requires metadata.extractor;
 
 
 	opens com.efsavage.picknick to javafx.fxml;
