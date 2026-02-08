@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("msi", "exe")]
-    [string]$Type = "exe"
+    [ValidateSet("msi", "exe", "app-image")]
+    [string]$Type = "app-image"
 )
 
 Set-StrictMode -Version Latest
@@ -77,5 +77,26 @@ Write-Host "Packaging $Type installer..."
     --dest $OutDir `
     --win-menu `
     --win-shortcut
+
+if ($Type -eq "app-image") {
+    $AppDir = Join-Path $OutDir "Picknick"
+    $ExePath = Join-Path $AppDir "bin\\Picknick.exe"
+    if (!(Test-Path $ExePath)) {
+        throw "Expected app image executable not found at $ExePath"
+    }
+
+    $StartMenuDir = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs\\Picknick"
+    New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
+    $ShortcutPath = Join-Path $StartMenuDir "Picknick.lnk"
+
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WScriptShell.CreateShortcut($ShortcutPath)
+    $Shortcut.TargetPath = $ExePath
+    $Shortcut.WorkingDirectory = (Split-Path $ExePath -Parent)
+    $Shortcut.IconLocation = $ExePath
+    $Shortcut.Save()
+
+    Write-Host "Start Menu shortcut created at: $ShortcutPath"
+}
 
 Write-Host "Done. Installer output: $OutDir"
