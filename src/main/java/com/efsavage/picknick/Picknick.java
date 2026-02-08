@@ -715,10 +715,11 @@ public class Picknick extends Application {
         List<File> maybeMove = new ArrayList<>();
 
         Date minDate = null;
-        minDate = collectSplitFiles(rootFiles, pivotDate, rootMove, minDate, splitBefore);
-        minDate = collectSplitFiles(keepFiles, pivotDate, keepMove, minDate, splitBefore);
-        minDate = collectSplitFiles(skipFiles, pivotDate, skipMove, minDate, splitBefore);
-        minDate = collectSplitFiles(maybeFiles, pivotDate, maybeMove, minDate, splitBefore);
+        String pivotName = pivotFile.getName();
+        minDate = collectSplitFiles(rootFiles, pivotDate, rootMove, minDate, splitBefore, pivotName);
+        minDate = collectSplitFiles(keepFiles, pivotDate, keepMove, minDate, splitBefore, pivotName);
+        minDate = collectSplitFiles(skipFiles, pivotDate, skipMove, minDate, splitBefore, pivotName);
+        minDate = collectSplitFiles(maybeFiles, pivotDate, maybeMove, minDate, splitBefore, pivotName);
 
         int total = rootMove.size() + keepMove.size() + skipMove.size() + maybeMove.size();
         if (total == 0 || minDate == null) {
@@ -761,13 +762,14 @@ public class Picknick extends Application {
         writeSessionMetadata(sessionDir, metadata.name, remainingTotal, metadata.archived);
     }
 
-    private Date collectSplitFiles(List<File> files, Date pivotDate, List<File> destination, Date minDate, boolean splitBefore) {
+    private Date collectSplitFiles(List<File> files, Date pivotDate, List<File> destination, Date minDate, boolean splitBefore, String pivotName) {
         for (File file : files) {
             Date captureDate = getCaptureDate(file);
             if (captureDate == null) {
                 continue;
             }
-            boolean shouldMove = splitBefore ? captureDate.before(pivotDate) : captureDate.after(pivotDate);
+            int cmp = compareByCaptureThenName(file, captureDate, new File(pivotName), pivotDate);
+            boolean shouldMove = splitBefore ? cmp < 0 : cmp > 0;
             if (shouldMove) {
                 destination.add(file);
                 if (minDate == null || captureDate.before(minDate)) {
@@ -1024,7 +1026,7 @@ public class Picknick extends Application {
             }
         }
 
-        known.sort(Comparator.comparing(captureDates::get));
+        known.sort((a, b) -> compareByCaptureThenName(a, captureDates.get(a), b, captureDates.get(b)));
 
         Map<String, Integer> nextIndexByDate = getNextSessionIndexByDate();
         List<List<File>> grouped = new ArrayList<>();
@@ -1085,6 +1087,7 @@ public class Picknick extends Application {
             items.addAll(buildGalleryItemsFromFolder(new File(session.directory, "skip"), MediaState.SKIP));
         }
 
+        items.sort((a, b) -> compareByCaptureThenName(a.file, getCaptureDate(a.file), b.file, getCaptureDate(b.file)));
         return items;
     }
 
@@ -1380,7 +1383,24 @@ public class Picknick extends Application {
         }
         List<File> result = new ArrayList<>();
         Collections.addAll(result, files);
+        result.sort((a, b) -> compareByCaptureThenName(a, getCaptureDate(a), b, getCaptureDate(b)));
         return result;
+    }
+
+    private int compareByCaptureThenName(File a, Date aDate, File b, Date bDate) {
+        if (aDate != null && bDate != null) {
+            int cmp = aDate.compareTo(bDate);
+            if (cmp != 0) {
+                return cmp;
+            }
+        } else if (aDate == null && bDate != null) {
+            return 1;
+        } else if (aDate != null) {
+            return -1;
+        }
+        String aName = a != null ? a.getName() : "";
+        String bName = b != null ? b.getName() : "";
+        return aName.compareToIgnoreCase(bName);
     }
 
     private void toggleArchive(Session session) {
