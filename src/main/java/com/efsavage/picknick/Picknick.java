@@ -375,8 +375,13 @@ public class Picknick extends Application {
 
                     @Override
                     protected Void call() throws Exception {
-                        tempFile = convertNEFToJPEG(nefFile);
-                        image = new Image(tempFile.toURI().toString());
+                        if (isJpeg(nefFile)) {
+                            tempFile = null;
+                            image = new Image(nefFile.toURI().toString());
+                        } else {
+                            tempFile = convertNEFToJPEG(nefFile);
+                            image = new Image(tempFile.toURI().toString());
+                        }
                         Date captureDate = getCaptureDate(nefFile);
                         captureDateTime = captureDate != null ? captureDate.toString() : null;
                         return null;
@@ -403,7 +408,9 @@ public class Picknick extends Application {
 
                             preloadNextImages();
                         } else {
-                            tempFile.delete();
+                            if (tempFile != null && tempFile.exists()) {
+                                tempFile.delete();
+                            }
                         }
                     }
 
@@ -449,7 +456,7 @@ public class Picknick extends Application {
                             } catch (IOException e) {
                                 System.out.println("Failed to delete NC_FLLST.DAT: " + path);
                             }
-                        } else if (filename.endsWith(".nef")) {
+                        } else if (filename.endsWith(".nef") || filename.endsWith(".jpg") || filename.endsWith(".jpeg")) {
                             allFiles.add(path.toFile());
                         }
                     });
@@ -559,7 +566,10 @@ public class Picknick extends Application {
         List<Session> sessions = new ArrayList<>();
 
         for (File folder : folders) {
-            File[] files = folder.listFiles((dir, name) -> name.toLowerCase().endsWith(".nef"));
+        File[] files = folder.listFiles((dir, name) -> {
+            String lower = name.toLowerCase();
+            return lower.endsWith(".nef") || lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+        });
             if (files == null || files.length == 0) {
                 continue;
             }
@@ -696,8 +706,13 @@ public class Picknick extends Application {
 
                     @Override
                     protected Void call() throws Exception {
-                        tempFile = convertNEFToJPEG(nefFile);
-                        image = new Image(tempFile.toURI().toString());
+                        if (isJpeg(nefFile)) {
+                            tempFile = null;
+                            image = new Image(nefFile.toURI().toString());
+                        } else {
+                            tempFile = convertNEFToJPEG(nefFile);
+                            image = new Image(tempFile.toURI().toString());
+                        }
                         Date captureDate = getCaptureDate(nefFile);
                         captureDateTime = captureDate != null ? captureDate.toString() : null;
                         return null;
@@ -711,7 +726,9 @@ public class Picknick extends Application {
                             preloadedTempFiles.put(fileKey, tempFile);
                             preloadedCaptureDates.put(fileKey, captureDateTime);
                         } else {
-                            tempFile.delete();
+                            if (tempFile != null && tempFile.exists()) {
+                                tempFile.delete();
+                            }
                         }
                     }
 
@@ -890,19 +907,31 @@ public class Picknick extends Application {
         preloadedCaptureDates.remove(fileKey);
         File tempFile = preloadedTempFiles.remove(fileKey);
         if (tempFile != null && tempFile.exists()) {
-            tempFile.delete();
+            if (tempFile != null && tempFile.exists()) {
+                tempFile.delete();
+            }
         }
     }
 
     private void clearPreloadedImages() {
         for (File tempFile : preloadedTempFiles.values()) {
             if (tempFile != null && tempFile.exists()) {
-                tempFile.delete();
+                if (tempFile != null && tempFile.exists()) {
+                    tempFile.delete();
+                }
             }
         }
         preloadedImages.clear();
         preloadedTempFiles.clear();
         preloadedCaptureDates.clear();
+    }
+
+    private boolean isJpeg(File file) {
+        if (file == null) {
+            return false;
+        }
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".jpg") || name.endsWith(".jpeg");
     }
 
     private boolean moveToDirectory(File file, File targetDirectory) {
@@ -1060,7 +1089,9 @@ public class Picknick extends Application {
         thumbnailExecutor.shutdownNow();
         for (File tempFile : sessionThumbnailTempFiles) {
             if (tempFile != null && tempFile.exists()) {
-                tempFile.delete();
+                if (tempFile != null && tempFile.exists()) {
+                    tempFile.delete();
+                }
             }
         }
     }
@@ -1085,9 +1116,14 @@ public class Picknick extends Application {
             return cached;
         }
         try {
-            File tempFile = convertNEFToJPEG(session.sampleFile);
-            sessionThumbnailTempFiles.add(tempFile);
-            Image image = new Image(tempFile.toURI().toString(), 200, 0, true, true);
+            File sourceFile = session.sampleFile;
+            File tempFile = null;
+            if (!isJpeg(sourceFile)) {
+                tempFile = convertNEFToJPEG(sourceFile);
+                sessionThumbnailTempFiles.add(tempFile);
+                sourceFile = tempFile;
+            }
+            Image image = new Image(sourceFile.toURI().toString(), 200, 0, true, true);
             sessionThumbnailCache.put(key, image);
             return image;
         } catch (IOException e) {
