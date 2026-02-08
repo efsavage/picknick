@@ -1,10 +1,10 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
 param(
     [ValidateSet("msi", "exe")]
     [string]$Type = "msi"
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $Mvnw = Join-Path $RepoRoot "mvnw.cmd"
