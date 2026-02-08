@@ -28,6 +28,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
+import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 import java.io.File;
@@ -82,9 +83,13 @@ public class Picknick extends Application {
     private BorderPane rootPane;
     private ToolBar viewerToolBar;
     private ToolBar homeToolBar;
+    private ToolBar galleryToolBar;
     private VBox homeContent;
     private TilePane sessionTilePane;
     private ScrollPane sessionScrollPane;
+    private TilePane galleryTilePane;
+    private ScrollPane galleryScrollPane;
+    private CheckBox showRejectedCheckBox;
     private Label homeSubtitle;
     private ProgressIndicator homeProgress;
     private DoubleBinding viewerFitWidth;
@@ -117,6 +122,7 @@ public class Picknick extends Application {
 
     private boolean isViewerActive = false;
     private Session currentSession;
+    private Session gallerySession;
     private final Preferences preferences = Preferences.userNodeForPackage(Picknick.class);
     private static final String PREF_WINDOW_X = "window.x";
     private static final String PREF_WINDOW_Y = "window.y";
@@ -139,6 +145,7 @@ public class Picknick extends Application {
 
         setupViewerToolBar();
         setupHomeToolBar();
+        setupGalleryToolBar();
         setupImageViewInteractions();
         setupSceneShortcuts(scene);
         setupViewerBindings();
@@ -209,6 +216,16 @@ public class Picknick extends Application {
         homeToolBar = new ToolBar(rescanButton, mergeButton, splitButton, showArchivedCheckBox);
     }
 
+    private void setupGalleryToolBar() {
+        Button backButton = new Button("Back");
+        backButton.setOnAction(e -> showHomeScreen());
+
+        showRejectedCheckBox = new CheckBox("Show rejected");
+        showRejectedCheckBox.setOnAction(e -> refreshGallery());
+
+        galleryToolBar = new ToolBar(backButton, showRejectedCheckBox);
+    }
+
     private void setupImageViewInteractions() {
         imageView.setPreserveRatio(true);
 
@@ -271,6 +288,7 @@ public class Picknick extends Application {
     private void showHomeScreen() {
         isViewerActive = false;
         currentSession = null;
+        gallerySession = null;
         updateTitle(null);
 
         if (homeContent == null) {
@@ -278,6 +296,7 @@ public class Picknick extends Application {
         }
         rootPane.setTop(homeToolBar);
         rootPane.setCenter(homeContent);
+        System.out.println("Home screen ready. Refreshing sessions...");
         refreshSessions();
     }
 
@@ -316,6 +335,7 @@ public class Picknick extends Application {
     }
 
     private void refreshSessions() {
+        System.out.println("Scanning import for sessions...");
         setHomeBusy(true, "Scanning import...");
 
         Task<List<Session>> scanTask = new Task<>() {
@@ -327,6 +347,7 @@ public class Picknick extends Application {
 
         scanTask.setOnSucceeded(event -> {
             List<Session> sessions = scanTask.getValue();
+            System.out.println("Session scan complete. Found " + sessions.size() + " session(s).");
             sessionTilePane.getChildren().setAll(buildSessionCards(sessions));
             setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
         });
@@ -334,6 +355,7 @@ public class Picknick extends Application {
         scanTask.setOnFailed(event -> {
             Throwable error = scanTask.getException();
             if (error != null) {
+                System.out.println("Session scan failed: " + error.getMessage());
                 showAlert("Scan Failed", error.getMessage());
             }
             setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
@@ -374,13 +396,25 @@ public class Picknick extends Application {
         HBox progressRow = new HBox(8, progressBar, percentLabel);
         progressRow.setAlignment(Pos.CENTER_LEFT);
 
+        Button reviewButton = new Button("Review");
+        reviewButton.setOnAction(event -> {
+            startSession(session);
+            event.consume();
+        });
+
+        Button viewButton = new Button("View");
+        viewButton.setOnAction(event -> {
+            showGallery(session);
+            event.consume();
+        });
+
         Button archiveButton = new Button(session.archived ? "Unarchive" : "Archive");
         archiveButton.setOnAction(event -> {
             toggleArchive(session);
             event.consume();
         });
 
-        HBox actionRow = new HBox(8, archiveButton);
+        HBox actionRow = new HBox(8, reviewButton, viewButton, archiveButton);
         actionRow.setAlignment(Pos.CENTER_LEFT);
 
         VBox card = new VBox(8, thumbnail, title, subtitle, progressRow, actionRow);
@@ -420,7 +454,7 @@ public class Picknick extends Application {
             if (db.hasString() && session.directory != null) {
                 File sourceDir = new File(db.getString());
                 if (!sourceDir.equals(session.directory)) {
-                    mergeSessions(sourceDir, session);
+                    runMergeAsync(sourceDir, session);
                     success = true;
                 }
             }
@@ -473,6 +507,7 @@ public class Picknick extends Application {
                 newName = session.folderName;
             }
             SessionMetadata metadata = readSessionMetadata(session.directory);
+            System.out.println("Renaming session " + session.folderName + " to \"" + newName + "\"");
             writeSessionMetadata(session.directory, newName, session.totalCount, metadata.archived);
             refreshSessions();
         };
@@ -486,15 +521,33 @@ public class Picknick extends Application {
     }
 
     private void mergeSessions(File sourceDir, Session targetSession) {
+        mergeSessionsWithProgress(sourceDir, targetSession, null);
+    }
+
+    private void mergeSessionsWithProgress(File sourceDir, Session targetSession, Task<?> task) {
         if (sourceDir == null || targetSession == null || targetSession.directory == null) {
             return;
         }
         File targetDir = targetSession.directory;
 
-        moveFiles(listMediaFiles(sourceDir), targetDir);
-        moveFiles(listMediaFiles(new File(sourceDir, "keep")), new File(targetDir, "keep"));
-        moveFiles(listMediaFiles(new File(sourceDir, "skip")), new File(targetDir, "skip"));
-        moveFiles(listMediaFiles(new File(sourceDir, "maybe")), new File(targetDir, "maybe"));
+        System.out.println("Merging session " + sourceDir.getName() + " into " + targetDir.getName());
+
+        List<File> rootFiles = listMediaFiles(sourceDir);
+        List<File> keepFiles = listMediaFiles(new File(sourceDir, "keep"));
+        List<File> skipFiles = listMediaFiles(new File(sourceDir, "skip"));
+        List<File> maybeFiles = listMediaFiles(new File(sourceDir, "maybe"));
+
+        int total = rootFiles.size() + keepFiles.size() + skipFiles.size() + maybeFiles.size();
+        if (task != null) {
+            task.updateProgress(0, Math.max(1, total));
+            task.updateMessage("Merging " + total + " files...");
+        }
+
+        int moved = 0;
+        moved = moveFilesWithProgress(rootFiles, targetDir, task, moved, total, "Moving unreviewed");
+        moved = moveFilesWithProgress(keepFiles, new File(targetDir, "keep"), task, moved, total, "Moving keep");
+        moved = moveFilesWithProgress(skipFiles, new File(targetDir, "skip"), task, moved, total, "Moving skip");
+        moved = moveFilesWithProgress(maybeFiles, new File(targetDir, "maybe"), task, moved, total, "Moving maybe");
 
         deleteSessionMetadataFile(sourceDir);
         pruneEmptyDirectories(sourceDir);
@@ -507,6 +560,64 @@ public class Picknick extends Application {
         SessionMetadata metadata = readSessionMetadata(targetDir);
         writeSessionMetadata(targetDir, metadata.name, totalCount, metadata.archived);
         refreshSessions();
+        System.out.println("Merge complete. New total: " + totalCount);
+    }
+
+    private void runMergeAsync(File sourceDir, Session targetSession) {
+        Task<Void> mergeTask = new Task<>() {
+            @Override
+            protected Void call() {
+                mergeSessionsWithProgress(sourceDir, targetSession, this);
+                return null;
+            }
+        };
+
+        Stage dialog = showMergeDialog(mergeTask);
+        mergeTask.setOnSucceeded(event -> {
+            if (dialog != null) {
+                dialog.close();
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+        });
+        mergeTask.setOnFailed(event -> {
+            Throwable error = mergeTask.getException();
+            if (error != null) {
+                showAlert("Merge Failed", error.getMessage());
+            }
+            if (dialog != null) {
+                dialog.close();
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+        });
+
+        new Thread(mergeTask, "session-merge").start();
+    }
+
+    private Stage showMergeDialog(Task<?> mergeTask) {
+        if (primaryStage == null) {
+            return null;
+        }
+        ProgressBar progressBar = new ProgressBar();
+        progressBar.setPrefWidth(260);
+        progressBar.progressProperty().bind(mergeTask.progressProperty());
+
+        Label message = new Label();
+        message.textProperty().bind(mergeTask.messageProperty());
+        message.setStyle("-fx-font-size: 14px;");
+
+        VBox content = new VBox(12, message, progressBar);
+        content.setAlignment(Pos.CENTER);
+        content.setPadding(new Insets(20));
+
+        Scene scene = new Scene(content);
+        Stage dialog = new Stage();
+        dialog.initOwner(primaryStage);
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.setResizable(false);
+        dialog.setTitle("Picknick");
+        dialog.setScene(scene);
+        dialog.show();
+        return dialog;
     }
 
     private void deleteDirectoryIfEmpty(File directory) {
@@ -549,6 +660,7 @@ public class Picknick extends Application {
 
         isViewerActive = true;
         currentSession = session;
+        System.out.println("Starting session: " + session.folderName + " (" + session.remainingCount + " remaining)");
         initSessionDirectories(session);
         imageFiles.clear();
         imageFiles.addAll(session.files);
@@ -560,6 +672,46 @@ public class Picknick extends Application {
         BorderPane.setMargin(imageView, new Insets(10));
 
         showImage();
+    }
+
+    private void showGallery(Session session) {
+        if (session == null || session.directory == null) {
+            return;
+        }
+        gallerySession = session;
+        isViewerActive = false;
+        System.out.println("Opening gallery for session: " + session.folderName);
+        updateTitle("Gallery");
+
+        if (galleryTilePane == null) {
+            galleryTilePane = new TilePane();
+            galleryTilePane.setHgap(16);
+            galleryTilePane.setVgap(16);
+            galleryTilePane.setPrefColumns(4);
+            galleryTilePane.setPrefTileWidth(200);
+            galleryTilePane.setPrefTileHeight(170);
+            galleryTilePane.setTileAlignment(Pos.TOP_LEFT);
+            galleryTilePane.setPadding(new Insets(8));
+
+            galleryScrollPane = new ScrollPane(galleryTilePane);
+            galleryScrollPane.setFitToWidth(true);
+            galleryScrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+            galleryScrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        }
+
+        rootPane.setTop(galleryToolBar);
+        rootPane.setCenter(galleryScrollPane);
+        refreshGallery();
+    }
+
+    private void refreshGallery() {
+        if (gallerySession == null || galleryTilePane == null) {
+            return;
+        }
+        boolean showRejected = showRejectedCheckBox != null && showRejectedCheckBox.isSelected();
+        System.out.println("Refreshing gallery. Show rejected: " + showRejected);
+        List<GalleryItem> items = buildGalleryItems(gallerySession, showRejected);
+        galleryTilePane.getChildren().setAll(buildGalleryCards(items));
     }
 
     private void showImage() {
@@ -661,6 +813,7 @@ public class Picknick extends Application {
     }
 
     private void moveImportsToSessions() {
+        System.out.println("Moving imports into sessions...");
         List<File> allFiles = new ArrayList<>();
         List<File> movFiles = new ArrayList<>();
         try {
@@ -671,6 +824,7 @@ public class Picknick extends Application {
                         if (filename.equals("nc_fllst.dat")) {
                             try {
                                 Files.deleteIfExists(path);
+                                System.out.println("Deleted NC_FLLST.DAT: " + path);
                             } catch (IOException e) {
                                 System.out.println("Failed to delete NC_FLLST.DAT: " + path);
                             }
@@ -685,10 +839,12 @@ public class Picknick extends Application {
         }
 
         if (!movFiles.isEmpty()) {
+            System.out.println("Routing " + movFiles.size() + " MOV file(s) to top-level mov folder.");
             moveFiles(movFiles, movDirectory);
         }
 
         if (allFiles.isEmpty()) {
+            System.out.println("No new media files in import.");
             pruneEmptyDirectories(importDirectory);
             return;
         }
@@ -737,6 +893,7 @@ public class Picknick extends Application {
 
             File sessionFolder = new File(sessionDirectory, dateKey + "-" + nextIndex);
             sessionFolder.mkdirs();
+            System.out.println("Creating session folder: " + sessionFolder.getName() + " (" + group.size() + " files)");
             moveFiles(group, sessionFolder);
             writeSessionMetadata(sessionFolder, dateKey + "-" + nextIndex, group.size());
         }
@@ -744,11 +901,80 @@ public class Picknick extends Application {
         if (!unknown.isEmpty()) {
             File unknownFolder = new File(sessionDirectory, "unknown");
             unknownFolder.mkdirs();
+            System.out.println("Routing " + unknown.size() + " unknown-date files to session/unknown");
             moveFiles(unknown, unknownFolder);
             writeSessionMetadata(unknownFolder, "unknown", unknown.size());
         }
 
         pruneEmptyDirectories(importDirectory);
+        System.out.println("Import processing complete.");
+    }
+
+    private List<GalleryItem> buildGalleryItems(Session session, boolean includeRejected) {
+        List<GalleryItem> items = new ArrayList<>();
+        if (session == null || session.directory == null) {
+            return items;
+        }
+
+        items.addAll(buildGalleryItemsFromFolder(session.directory, MediaState.UNREVIEWED));
+        items.addAll(buildGalleryItemsFromFolder(new File(session.directory, "keep"), MediaState.KEEP));
+        items.addAll(buildGalleryItemsFromFolder(new File(session.directory, "maybe"), MediaState.MAYBE));
+
+        if (includeRejected) {
+            items.addAll(buildGalleryItemsFromFolder(new File(session.directory, "skip"), MediaState.SKIP));
+        }
+
+        return items;
+    }
+
+    private List<GalleryItem> buildGalleryItemsFromFolder(File folder, MediaState state) {
+        List<File> files = listMediaFiles(folder);
+        List<GalleryItem> items = new ArrayList<>();
+        for (File file : files) {
+            items.add(new GalleryItem(file, state));
+        }
+        return items;
+    }
+
+    private List<javafx.scene.Node> buildGalleryCards(List<GalleryItem> items) {
+        List<javafx.scene.Node> cards = new ArrayList<>();
+        for (GalleryItem item : items) {
+            cards.add(buildGalleryCard(item));
+        }
+        return cards;
+    }
+
+    private VBox buildGalleryCard(GalleryItem item) {
+        ImageView thumbnail = new ImageView();
+        thumbnail.setFitWidth(180);
+        thumbnail.setFitHeight(120);
+        thumbnail.setPreserveRatio(true);
+
+        String borderColor = switch (item.state) {
+            case KEEP -> "#3cb371";
+            case MAYBE -> "#d9822b";
+            case SKIP -> "#c0392b";
+            default -> "#9e9e9e";
+        };
+
+        VBox card = new VBox(thumbnail);
+        card.setPadding(new Insets(6));
+        card.setStyle("-fx-background-color: #ffffff; -fx-border-color: " + borderColor + "; -fx-border-width: 2; -fx-border-radius: 6; -fx-background-radius: 6;");
+
+        Image cached = sessionThumbnailCache.get(item.file.getAbsolutePath());
+        if (cached != null) {
+            thumbnail.setImage(cached);
+        } else {
+            thumbnailExecutor.submit(() -> {
+                Image image = loadThumbnailForFile(item.file, 180);
+                if (image != null) {
+                    sessionThumbnailCache.put(item.file.getAbsolutePath(), image);
+                    Platform.runLater(() -> thumbnail.setImage(image));
+                }
+            });
+        }
+
+        return card;
     }
 
     private Map<String, Integer> getNextSessionIndexByDate() {
@@ -788,6 +1014,7 @@ public class Picknick extends Application {
         if (folders == null || folders.length == 0) {
             return Collections.emptyList();
         }
+        System.out.println("Loading sessions from disk. Include archived: " + includeArchived);
 
         List<Session> sessions = new ArrayList<>();
 
@@ -891,6 +1118,26 @@ public class Picknick extends Application {
         }
     }
 
+    private int moveFilesWithProgress(List<File> files, File targetDirectory, Task<?> task, int moved, int total, String label) {
+        if (files.isEmpty()) {
+            return moved;
+        }
+        if (task != null) {
+            task.updateMessage(label + " (" + moved + "/" + total + ")");
+        }
+        for (File file : files) {
+            if (!moveToDirectory(file, targetDirectory)) {
+                System.out.println("Skipping file (missing or failed move): " + file.getAbsolutePath());
+            }
+            moved++;
+            if (task != null) {
+                task.updateProgress(moved, Math.max(1, total));
+                task.updateMessage(label + " (" + moved + "/" + total + ")");
+            }
+        }
+        return moved;
+    }
+
     private void initSessionDirectories(Session session) {
         if (session == null || session.directory == null) {
             sessionKeepDirectory = null;
@@ -955,6 +1202,7 @@ public class Picknick extends Application {
         }
         SessionMetadata metadata = readSessionMetadata(session.directory);
         metadata.archived = !metadata.archived;
+        System.out.println((metadata.archived ? "Archived" : "Unarchived") + " session: " + session.folderName);
         writeSessionMetadata(session.directory, metadata.name != null ? metadata.name : session.folderName, session.totalCount, metadata.archived);
         refreshSessions();
     }
@@ -1301,9 +1549,14 @@ public class Picknick extends Application {
             }
             Path targetPath = Paths.get(targetDirectory.getAbsolutePath(), file.getName());
             if (Files.exists(targetPath)) {
-                showAlert("Name Collision", "File already exists, skipping move: " + targetPath.getFileName());
+                if (resolveCollision(file.toPath(), targetPath)) {
+                    System.out.println("Collision resolved (identical): " + targetPath.getFileName());
+                    return true;
+                }
+                showAlert("Name Collision", "File already exists with different content: " + targetPath.getFileName());
                 return false;
             }
+            System.out.println("Moving file: " + file.getAbsolutePath() + " -> " + targetPath);
             return safeMoveWithVerify(file.toPath(), targetPath);
         } catch (IOException e) {
             e.printStackTrace();
@@ -1320,6 +1573,7 @@ public class Picknick extends Application {
         byte[] sourceHash = computeHash(sourcePath);
 
         Path tempPath = targetPath.resolveSibling(targetPath.getFileName().toString() + ".tmp");
+        System.out.println("Copying to temp: " + tempPath);
         Files.copy(sourcePath, tempPath, StandardCopyOption.REPLACE_EXISTING);
 
         long tempSize = Files.size(tempPath);
@@ -1336,8 +1590,28 @@ public class Picknick extends Application {
             Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING);
         }
 
+        System.out.println("Move verified: " + targetPath);
         Files.deleteIfExists(sourcePath);
         return true;
+    }
+
+    private boolean resolveCollision(Path sourcePath, Path targetPath) throws IOException {
+        if (!Files.exists(sourcePath)) {
+            return false;
+        }
+        long sourceSize = Files.size(sourcePath);
+        long targetSize = Files.size(targetPath);
+        if (sourceSize != targetSize) {
+            return false;
+        }
+        byte[] sourceHash = computeHash(sourcePath);
+        byte[] targetHash = computeHash(targetPath);
+        if (MessageDigest.isEqual(sourceHash, targetHash)) {
+            System.out.println("Identical collision; deleting source: " + sourcePath);
+            Files.deleteIfExists(sourcePath);
+            return true;
+        }
+        return false;
     }
 
     private byte[] computeHash(Path path) throws IOException {
