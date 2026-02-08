@@ -30,6 +30,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
+import javafx.scene.layout.StackPane;
+import javafx.scene.shape.Rectangle;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
@@ -107,6 +109,27 @@ public class Picknick extends Application {
     private Label burstLeftTimeLabel;
     private Label burstRightTimeLabel;
     private Label burstHintLabel;
+    private ScrollPane burstFilmstripScroll;
+    private HBox burstFilmstripBox;
+    private StackPane burstFilmstripContainer;
+    private StackPane burstLeftPane;
+    private StackPane burstRightPane;
+    private File burstLeftFile;
+    private File burstRightFile;
+    private final Map<String, StackPane> burstFilmstripCards = new HashMap<>();
+    private final Set<String> burstSkippedNames = new HashSet<>();
+    private double burstZoomScale = 1.0;
+    private double burstTranslateX = 0.0;
+    private double burstTranslateY = 0.0;
+    private double burstDragStartX = 0.0;
+    private double burstDragStartY = 0.0;
+    private List<File> burstCurrentPool = new ArrayList<>();
+    private List<File> burstNextPool = new ArrayList<>();
+    private File burstActiveLeft;
+    private File burstActiveRight;
+    private final java.util.Random burstRandom = new java.util.Random();
+    private List<File> burstGroupFiles = new ArrayList<>();
+    private String currentBurstGroupKey;
     private CheckBox showRejectedCheckBox;
     private Label homeSubtitle;
     private ProgressIndicator homeProgress;
@@ -143,7 +166,6 @@ public class Picknick extends Application {
     private Session currentSession;
     private Session gallerySession;
     private boolean isBurstActive = false;
-    private Deque<File> burstQueue = new ArrayDeque<>();
     private final Map<String, List<File>> burstGroupByFile = new HashMap<>();
     private final Set<String> completedBurstGroups = new HashSet<>();
     private static final long BURST_GAP_MS = 2000L;
@@ -231,7 +253,7 @@ public class Picknick extends Application {
         Button backButton = new Button("Exit Burst");
         backButton.setOnAction(e -> exitBurstMode());
 
-        Label hint = new Label("←/→ picks winner, ↑ ties (advances both), S skips burst");
+        Label hint = new Label("←/→ picks winner, ↓ skips both, A keeps all");
         hint.setStyle("-fx-text-fill: #555;");
 
         burstToolBar = new ToolBar(backButton, hint);
@@ -973,6 +995,9 @@ public class Picknick extends Application {
         if (group == null || group.size() < 2) {
             return false;
         }
+        if (isInSkipFolder(currentFile)) {
+            return false;
+        }
         String key = burstGroupKey(group);
         return !completedBurstGroups.contains(key);
     }
@@ -984,7 +1009,25 @@ public class Picknick extends Application {
         }
         isBurstActive = true;
         isViewerActive = false;
-        burstQueue = new ArrayDeque<>(group);
+        burstZoomScale = 1.0;
+        burstTranslateX = 0.0;
+        burstTranslateY = 0.0;
+        burstSkippedNames.clear();
+        burstCurrentPool.clear();
+        burstNextPool.clear();
+        burstActiveLeft = null;
+        burstActiveRight = null;
+        burstGroupFiles = new ArrayList<>(group);
+        currentBurstGroupKey = burstGroupKey(group);
+        for (File file : group) {
+            if (isInSessionRoot(file)) {
+                burstCurrentPool.add(file);
+            }
+        }
+        if (burstCurrentPool.size() < 2) {
+            completedBurstGroups.add(currentBurstGroupKey);
+            return;
+        }
         updateTitle("Burst Review");
 
         if (burstPane == null) {
@@ -995,17 +1038,32 @@ public class Picknick extends Application {
             burstRightView.setFitHeight(600);
             burstRightView.setPreserveRatio(true);
 
+            setupBurstZoomAndPan();
+
             burstLeftLabel = new Label();
             burstRightLabel = new Label();
             burstLeftTimeLabel = new Label();
             burstRightTimeLabel = new Label();
             burstLeftTimeLabel.setStyle("-fx-text-fill: #666;");
             burstRightTimeLabel.setStyle("-fx-text-fill: #666;");
-            burstHintLabel = new Label("←/→ picks winner, ↑ ties (advances both), S skips burst");
+            burstHintLabel = new Label("←/→ picks winner, ↓ skips both, A keeps all");
             burstHintLabel.setStyle("-fx-text-fill: #666;");
 
-            VBox leftBox = new VBox(6, burstLeftView, burstLeftLabel, burstLeftTimeLabel);
-            VBox rightBox = new VBox(6, burstRightView, burstRightLabel, burstRightTimeLabel);
+            burstLeftPane = new StackPane(burstLeftView);
+            burstRightPane = new StackPane(burstRightView);
+            burstLeftPane.setMinSize(0, 0);
+            burstRightPane.setMinSize(0, 0);
+            Rectangle leftClip = new Rectangle();
+            leftClip.widthProperty().bind(burstLeftPane.widthProperty());
+            leftClip.heightProperty().bind(burstLeftPane.heightProperty());
+            burstLeftPane.setClip(leftClip);
+            Rectangle rightClip = new Rectangle();
+            rightClip.widthProperty().bind(burstRightPane.widthProperty());
+            rightClip.heightProperty().bind(burstRightPane.heightProperty());
+            burstRightPane.setClip(rightClip);
+
+            VBox leftBox = new VBox(6, burstLeftPane, burstLeftLabel, burstLeftTimeLabel);
+            VBox rightBox = new VBox(6, burstRightPane, burstRightLabel, burstRightTimeLabel);
             leftBox.setAlignment(Pos.CENTER);
             rightBox.setAlignment(Pos.CENTER);
 
@@ -1015,22 +1073,121 @@ public class Picknick extends Application {
             HBox.setHgrow(rightBox, Priority.ALWAYS);
             leftBox.setFillWidth(true);
             rightBox.setFillWidth(true);
-            VBox center = new VBox(10, images, burstHintLabel);
+            burstFilmstripBox = new HBox(8);
+            burstFilmstripBox.setAlignment(Pos.CENTER);
+            burstFilmstripBox.setPadding(new Insets(6, 0, 0, 0));
+            burstFilmstripContainer = new StackPane(burstFilmstripBox);
+            burstFilmstripContainer.setAlignment(Pos.CENTER);
+            burstFilmstripScroll = new ScrollPane(burstFilmstripContainer);
+            burstFilmstripScroll.setFitToHeight(true);
+            burstFilmstripScroll.setFitToWidth(true);
+            burstFilmstripScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+            burstFilmstripScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+            burstFilmstripScroll.setPrefHeight(90);
+
+            Button leftWinButton = new Button("Left Wins");
+            Button rightWinButton = new Button("Right Wins");
+            Button skipBothButton = new Button("Skip Both");
+            Button keepAllButton = new Button("Keep All");
+            leftWinButton.setOnAction(e -> handleBurstKey(KeyCode.LEFT));
+            rightWinButton.setOnAction(e -> handleBurstKey(KeyCode.RIGHT));
+            skipBothButton.setOnAction(e -> handleBurstKey(KeyCode.DOWN));
+            keepAllButton.setOnAction(e -> handleBurstKey(KeyCode.A));
+            leftWinButton.setFocusTraversable(false);
+            rightWinButton.setFocusTraversable(false);
+            skipBothButton.setFocusTraversable(false);
+            keepAllButton.setFocusTraversable(false);
+            HBox burstControls = new HBox(12, leftWinButton, skipBothButton, rightWinButton, keepAllButton);
+            burstControls.setAlignment(Pos.CENTER);
+
+            VBox center = new VBox(10, burstFilmstripScroll, images, burstHintLabel);
             center.setAlignment(Pos.CENTER);
             center.setPadding(new Insets(16));
 
             burstPane = new BorderPane(center);
+            burstPane.setBottom(burstControls);
+            BorderPane.setMargin(burstControls, new Insets(0, 0, 12, 0));
         }
 
         rootPane.setTop(burstToolBar);
         rootPane.setCenter(burstPane);
         bindBurstViewSizes();
+        applyBurstTransforms();
         if (burstHintLabel != null) {
-            burstHintLabel.setText("←/→ picks winner, ↑ ties (advances both), S skips burst");
+            burstHintLabel.setText("←/→ picks winner, ↓ skips both, A keeps all");
         }
-        preloadBurstImages(group);
+        preloadBurstImages(burstGroupFiles);
+        burstPane.setOnKeyPressed(event -> handleBurstKey(event.getCode()));
         burstPane.requestFocus();
         showBurstPair();
+    }
+
+    private void setupBurstZoomAndPan() {
+        burstLeftView.setOnScroll(event -> {
+            if (event.getDeltaY() == 0) {
+                return;
+            }
+            double scaleFactor = event.getDeltaY() > 0 ? 1.1 : 0.9;
+            burstZoomScale = clamp(burstZoomScale * scaleFactor, 1.0, 6.0);
+            applyBurstTransforms();
+            event.consume();
+        });
+
+        burstRightView.setOnScroll(event -> {
+            if (event.getDeltaY() == 0) {
+                return;
+            }
+            double scaleFactor = event.getDeltaY() > 0 ? 1.1 : 0.9;
+            burstZoomScale = clamp(burstZoomScale * scaleFactor, 1.0, 6.0);
+            applyBurstTransforms();
+            event.consume();
+        });
+
+        burstLeftView.setOnMousePressed(event -> {
+            burstDragStartX = event.getSceneX() - burstTranslateX;
+            burstDragStartY = event.getSceneY() - burstTranslateY;
+        });
+
+        burstRightView.setOnMousePressed(event -> {
+            burstDragStartX = event.getSceneX() - burstTranslateX;
+            burstDragStartY = event.getSceneY() - burstTranslateY;
+        });
+
+        burstLeftView.setOnMouseDragged(event -> {
+            burstTranslateX = event.getSceneX() - burstDragStartX;
+            burstTranslateY = event.getSceneY() - burstDragStartY;
+            applyBurstTransforms();
+        });
+
+        burstRightView.setOnMouseDragged(event -> {
+            burstTranslateX = event.getSceneX() - burstDragStartX;
+            burstTranslateY = event.getSceneY() - burstDragStartY;
+            applyBurstTransforms();
+        });
+    }
+
+    private void applyBurstTransforms() {
+        if (burstLeftView == null || burstRightView == null) {
+            return;
+        }
+        if (burstZoomScale <= 1.0) {
+            burstZoomScale = 1.0;
+            burstTranslateX = 0.0;
+            burstTranslateY = 0.0;
+        }
+        burstLeftView.setScaleX(burstZoomScale);
+        burstLeftView.setScaleY(burstZoomScale);
+        burstRightView.setScaleX(burstZoomScale);
+        burstRightView.setScaleY(burstZoomScale);
+
+        burstLeftView.setTranslateX(burstTranslateX);
+        burstLeftView.setTranslateY(burstTranslateY);
+        burstRightView.setTranslateX(burstTranslateX);
+        burstRightView.setTranslateY(burstTranslateY);
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private void bindBurstViewSizes() {
@@ -1057,69 +1214,65 @@ public class Picknick extends Application {
         if (!isBurstActive) {
             return;
         }
-        if (burstQueue.size() <= 1) {
-            finalizeBurst();
+        selectNextBurstPair();
+        if (!isBurstActive) {
             return;
         }
-        File left = peekBurst(0);
-        File right = peekBurst(1);
-        if (left == null || right == null) {
+        if (burstActiveLeft == null || burstActiveRight == null) {
             finalizeBurst();
             return;
         }
 
-        burstLeftLabel.setText(left.getName());
-        burstRightLabel.setText(right.getName());
-        burstLeftTimeLabel.setText(formatCaptureTimestamp(getCaptureDate(left)));
-        burstRightTimeLabel.setText(formatCaptureTimestamp(getCaptureDate(right)));
+        burstLeftFile = burstActiveLeft;
+        burstRightFile = burstActiveRight;
+        burstLeftLabel.setText(burstActiveLeft.getName());
+        burstRightLabel.setText(burstActiveRight.getName());
+        burstLeftTimeLabel.setText(formatCaptureTimestamp(getCaptureDate(burstActiveLeft)));
+        burstRightTimeLabel.setText(formatCaptureTimestamp(getCaptureDate(burstActiveRight)));
 
-        loadBurstImage(left, burstLeftView);
-        loadBurstImage(right, burstRightView);
+        loadBurstImage(burstActiveLeft, burstLeftView);
+        loadBurstImage(burstActiveRight, burstRightView);
+        updateBurstBorders();
+        updateBurstFilmstrip();
     }
 
     private void handleBurstKey(KeyCode code) {
-        if (!isBurstActive || burstQueue.size() <= 1) {
+        if (!isBurstActive) {
             return;
         }
-        File left = burstQueue.pollFirst();
-        File right = burstQueue.pollFirst();
-        if (left == null || right == null) {
-            finalizeBurst();
+        if (burstActiveLeft == null || burstActiveRight == null) {
+            showBurstPair();
             return;
         }
 
         if (code == KeyCode.LEFT) {
-            markBurstLoser(right);
-            burstQueue.addLast(left);
-            advanceBurst();
+            promoteBurstWinner(burstActiveLeft);
+            markBurstLoser(burstActiveRight);
         } else if (code == KeyCode.RIGHT) {
-            markBurstLoser(left);
-            burstQueue.addLast(right);
-            advanceBurst();
-        } else if (code == KeyCode.UP) {
-            if (burstQueue.size() == 0) {
-                keepBurstWinners(left, right);
-                finalizeBurst();
-            } else {
-                burstQueue.addLast(left);
-                burstQueue.addLast(right);
-                if (burstHintLabel != null) {
-                    burstHintLabel.setText("Multiple winners. Continue comparing to resolve.");
-                }
-                advanceBurst();
-            }
-        } else if (code == KeyCode.S) {
-            burstQueue.addFirst(right);
-            burstQueue.addFirst(left);
-            skipEntireBurst();
+            promoteBurstWinner(burstActiveRight);
+            markBurstLoser(burstActiveLeft);
+        } else if (code == KeyCode.DOWN) {
+            markBurstLoser(burstActiveLeft);
+            markBurstLoser(burstActiveRight);
+        } else if (code == KeyCode.A) {
+            keepAllBurstCandidates();
+            return;
+        } else {
+            return;
         }
+
+        burstActiveLeft = null;
+        burstActiveRight = null;
+        showBurstPair();
     }
 
-    private void advanceBurst() {
-        if (burstQueue.size() <= 1) {
-            finalizeBurst();
-        } else {
-            showBurstPair();
+    private void promoteBurstWinner(File file) {
+        if (file == null) {
+            return;
+        }
+        removeFromBurstPools(file);
+        if (!burstNextPool.contains(file)) {
+            burstNextPool.add(file);
         }
     }
 
@@ -1130,53 +1283,80 @@ public class Picknick extends Application {
         if (file.getParentFile().equals(sessionSkipDirectory)) {
             return;
         }
-        moveToDirectory(file, sessionSkipDirectory);
+        if (!moveToDirectory(file, sessionSkipDirectory)) {
+            return;
+        }
+        removeFromImageFiles(file);
+        removeFromBurstPools(file);
+        burstSkippedNames.add(file.getName());
+        applyFilmstripGray(file);
+        updateBurstFilmstrip();
     }
 
     private void finalizeBurst() {
-        if (burstQueue.size() == 1) {
-            File winner = burstQueue.peekFirst();
-            if (winner != null && sessionKeepDirectory != null && !winner.getParentFile().equals(sessionKeepDirectory)) {
-                moveToDirectory(winner, sessionKeepDirectory);
-            }
-        }
-        File any = burstQueue.peekFirst();
-        List<File> group = any != null ? burstGroupByFile.get(any.getAbsolutePath()) : null;
-        String key = burstGroupKey(group);
-        completedBurstGroups.add(key);
+        completedBurstGroups.add(currentBurstGroupKey);
+        resetBurstState();
         exitBurstMode();
         showImage();
     }
 
-    private void skipEntireBurst() {
-        if (burstQueue == null || burstQueue.isEmpty() || sessionSkipDirectory == null) {
-            return;
-        }
-        File any = burstQueue.peekFirst();
-        List<File> group = any != null ? burstGroupByFile.get(any.getAbsolutePath()) : null;
-        if (group == null || group.isEmpty()) {
-            group = new ArrayList<>(burstQueue);
-        }
-        for (File file : group) {
-            if (file != null && !file.getParentFile().equals(sessionSkipDirectory)) {
-                moveToDirectory(file, sessionSkipDirectory);
+    private void keepAllBurstCandidates() {
+        List<File> candidates = collectBurstCandidates();
+        if (sessionKeepDirectory != null) {
+            for (File file : candidates) {
+                if (file != null && !file.getParentFile().equals(sessionKeepDirectory)) {
+                    if (moveToDirectory(file, sessionKeepDirectory)) {
+                        removeFromImageFiles(file);
+                    }
+                }
             }
         }
-        String key = burstGroupKey(group);
-        completedBurstGroups.add(key);
+        completedBurstGroups.add(currentBurstGroupKey);
+        resetBurstState();
         exitBurstMode();
         showImage();
     }
 
-    private void keepBurstWinners(File first, File second) {
-        if (sessionKeepDirectory == null) {
+    private void selectNextBurstPair() {
+        pruneBurstPools();
+        if (burstActiveLeft != null && !isInSessionRoot(burstActiveLeft)) {
+            burstActiveLeft = null;
+        }
+        if (burstActiveRight != null && !isInSessionRoot(burstActiveRight)) {
+            burstActiveRight = null;
+        }
+        removeFromBurstPools(burstActiveLeft);
+        removeFromBurstPools(burstActiveRight);
+
+        int totalCandidates = burstCandidateCount();
+        if (totalCandidates == 0) {
+            finalizeBurst();
             return;
         }
-        if (first != null && !first.getParentFile().equals(sessionKeepDirectory)) {
-            moveToDirectory(first, sessionKeepDirectory);
+        if (totalCandidates == 1) {
+            exitBurstToSingleShot(getSingleRemainingCandidate());
+            return;
         }
-        if (second != null && !second.getParentFile().equals(sessionKeepDirectory)) {
-            moveToDirectory(second, sessionKeepDirectory);
+        if (burstActiveLeft != null && burstActiveRight != null) {
+            return;
+        }
+
+        refreshBurstCurrentPool();
+        if (burstCurrentPool.size() == 1 && burstActiveLeft == null && burstActiveRight == null) {
+            burstNextPool.add(burstCurrentPool.remove(0));
+            refreshBurstCurrentPool();
+        }
+        if (burstActiveLeft == null) {
+            burstActiveLeft = takeRandomFromCurrentPool();
+        }
+        refreshBurstCurrentPool();
+        if (burstActiveRight == null) {
+            burstActiveRight = takeRandomFromCurrentPool();
+        }
+        if (burstActiveLeft == null || burstActiveRight == null) {
+            if (burstCandidateCount() == 1) {
+                exitBurstToSingleShot(getSingleRemainingCandidate());
+            }
         }
     }
 
@@ -1187,18 +1367,151 @@ public class Picknick extends Application {
         rootPane.setCenter(imageView);
     }
 
-    private File peekBurst(int index) {
-        if (burstQueue == null || burstQueue.isEmpty()) {
+    private void resetBurstState() {
+        burstActiveLeft = null;
+        burstActiveRight = null;
+        burstLeftFile = null;
+        burstRightFile = null;
+        burstCurrentPool.clear();
+        burstNextPool.clear();
+    }
+
+    private void pruneBurstPools() {
+        burstCurrentPool.removeIf(file -> !isInSessionRoot(file));
+        burstNextPool.removeIf(file -> !isInSessionRoot(file));
+    }
+
+    private int burstCandidateCount() {
+        int count = burstCurrentPool.size() + burstNextPool.size();
+        if (burstActiveLeft != null) {
+            count++;
+        }
+        if (burstActiveRight != null) {
+            count++;
+        }
+        return count;
+    }
+
+    private void removeFromBurstPools(File file) {
+        if (file == null) {
+            return;
+        }
+        burstCurrentPool.remove(file);
+        burstNextPool.remove(file);
+    }
+
+    private void addBackToBurstPool(File file) {
+        if (file == null) {
+            return;
+        }
+        if (!isInSessionRoot(file)) {
+            return;
+        }
+        if (!burstCurrentPool.contains(file) && !burstNextPool.contains(file)) {
+            burstCurrentPool.add(file);
+        }
+    }
+
+    private void refreshBurstCurrentPool() {
+        if (burstCurrentPool.isEmpty() && !burstNextPool.isEmpty()) {
+            burstCurrentPool = new ArrayList<>(burstNextPool);
+            burstNextPool.clear();
+        }
+    }
+
+    private File takeRandomFromCurrentPool() {
+        if (burstCurrentPool.isEmpty()) {
             return null;
         }
-        int i = 0;
-        for (File file : burstQueue) {
-            if (i == index) {
-                return file;
-            }
-            i++;
+        int index = burstRandom.nextInt(burstCurrentPool.size());
+        return burstCurrentPool.remove(index);
+    }
+
+    private File getSingleRemainingCandidate() {
+        if (burstActiveLeft != null) {
+            return burstActiveLeft;
+        }
+        if (burstActiveRight != null) {
+            return burstActiveRight;
+        }
+        if (!burstCurrentPool.isEmpty()) {
+            return burstCurrentPool.get(0);
+        }
+        if (!burstNextPool.isEmpty()) {
+            return burstNextPool.get(0);
         }
         return null;
+    }
+
+    private void exitBurstToSingleShot(File file) {
+        if (file == null) {
+            finalizeBurst();
+            return;
+        }
+        completedBurstGroups.add(currentBurstGroupKey);
+        resetBurstState();
+        exitBurstMode();
+        setCurrentIndexToFile(file);
+        showImage();
+    }
+
+    private List<File> collectBurstCandidates() {
+        List<File> candidates = new ArrayList<>();
+        addCandidate(candidates, burstActiveLeft);
+        addCandidate(candidates, burstActiveRight);
+        for (File file : burstCurrentPool) {
+            addCandidate(candidates, file);
+        }
+        for (File file : burstNextPool) {
+            addCandidate(candidates, file);
+        }
+        return candidates;
+    }
+
+    private void addCandidate(List<File> candidates, File file) {
+        if (file == null) {
+            return;
+        }
+        if (!isInSessionRoot(file)) {
+            return;
+        }
+        if (!candidates.contains(file)) {
+            candidates.add(file);
+        }
+    }
+
+    private void setCurrentIndexToFile(File file) {
+        if (file == null) {
+            return;
+        }
+        int index = findImageIndex(file);
+        if (index >= 0) {
+            currentIndex = index;
+        }
+    }
+
+    private int findImageIndex(File file) {
+        if (file == null) {
+            return -1;
+        }
+        String path = file.getAbsolutePath();
+        for (int i = 0; i < imageFiles.size(); i++) {
+            if (imageFiles.get(i).getAbsolutePath().equalsIgnoreCase(path)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void removeFromImageFiles(File file) {
+        int index = findImageIndex(file);
+        if (index < 0) {
+            return;
+        }
+        if (index <= currentIndex && currentIndex > 0) {
+            currentIndex--;
+        }
+        imageFiles.remove(index);
     }
 
     private void loadBurstImage(File file, ImageView targetView) {
@@ -1211,6 +1524,149 @@ public class Picknick extends Application {
                 Platform.runLater(() -> targetView.setImage(image));
             }
         });
+    }
+
+    private void updateBurstBorders() {
+        if (burstLeftPane == null || burstRightPane == null) {
+            return;
+        }
+        burstLeftPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
+        burstRightPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
+    }
+
+    private void updateBurstFilmstrip() {
+        if (burstFilmstripBox == null) {
+            return;
+        }
+        List<File> group = burstGroupFiles != null ? burstGroupFiles : Collections.emptyList();
+        burstFilmstripCards.clear();
+        burstFilmstripBox.getChildren().setAll(buildBurstFilmstripCards(group));
+    }
+
+    private List<javafx.scene.Node> buildBurstFilmstripCards(List<File> group) {
+        List<javafx.scene.Node> cards = new ArrayList<>();
+        for (File file : group) {
+            cards.add(buildBurstFilmstripCard(file));
+        }
+        return cards;
+    }
+
+    private StackPane buildBurstFilmstripCard(File file) {
+        ImageView thumb = new ImageView();
+        thumb.setFitWidth(108);
+        thumb.setFitHeight(81);
+        thumb.setPreserveRatio(true);
+
+        StackPane card = new StackPane(thumb);
+        card.setPadding(new Insets(2));
+        burstFilmstripCards.put(file.getAbsolutePath(), card);
+
+        boolean isSkipped = isInSkipFolder(file) || burstSkippedNames.contains(file.getName());
+        boolean isCandidate = isInSessionRoot(file);
+        if (isSkipped) {
+            javafx.scene.effect.ColorAdjust gray = new javafx.scene.effect.ColorAdjust();
+            gray.setSaturation(-1.0);
+            thumb.setEffect(gray);
+        }
+
+        boolean isLeft = file.equals(burstLeftFile);
+        boolean isRight = file.equals(burstRightFile);
+        if (isLeft || isRight) {
+            card.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 4;");
+        } else {
+            card.setStyle("-fx-border-color: transparent; -fx-border-width: 2;");
+        }
+
+        Image cached = sessionThumbnailCache.get(file.getAbsolutePath());
+        if (cached != null) {
+            thumb.setImage(cached);
+        } else {
+            thumbnailExecutor.submit(() -> {
+                Image image = loadThumbnailForFile(file, 108);
+                if (image != null) {
+                    sessionThumbnailCache.put(file.getAbsolutePath(), image);
+                    Platform.runLater(() -> thumb.setImage(image));
+                }
+            });
+        }
+
+        if (!isLeft && !isRight && !isSkipped && isCandidate) {
+            HBox overlay = new HBox(4);
+            overlay.setAlignment(Pos.CENTER);
+            Button leftBtn = new Button("L");
+            Button rightBtn = new Button("R");
+            leftBtn.setOnAction(e -> setBurstSlot(file, true));
+            rightBtn.setOnAction(e -> setBurstSlot(file, false));
+            leftBtn.setFocusTraversable(false);
+            rightBtn.setFocusTraversable(false);
+            overlay.getChildren().addAll(leftBtn, rightBtn);
+            overlay.setStyle("-fx-background-color: rgba(0,0,0,0.4); -fx-padding: 2; -fx-background-radius: 4;");
+            overlay.setVisible(false);
+            card.getChildren().add(overlay);
+            card.setOnMouseEntered(e -> overlay.setVisible(true));
+            card.setOnMouseExited(e -> overlay.setVisible(false));
+        }
+
+        return card;
+    }
+
+    private void setBurstSlot(File file, boolean leftSlot) {
+        if (file == null) {
+            return;
+        }
+        if (!isInSessionRoot(file)) {
+            return;
+        }
+        File previousLeft = burstActiveLeft;
+        File previousRight = burstActiveRight;
+
+        if (leftSlot) {
+            if (previousLeft != null && !previousLeft.equals(file)) {
+                addBackToBurstPool(previousLeft);
+            }
+            burstActiveLeft = file;
+        } else {
+            if (previousRight != null && !previousRight.equals(file)) {
+                addBackToBurstPool(previousRight);
+            }
+            burstActiveRight = file;
+        }
+
+        if (burstActiveLeft != null && burstActiveRight != null && burstActiveLeft.equals(burstActiveRight)) {
+            if (leftSlot) {
+                burstActiveRight = null;
+            } else {
+                burstActiveLeft = null;
+            }
+        }
+
+        removeFromBurstPools(file);
+        if (burstActiveLeft != null) {
+            removeFromBurstPools(burstActiveLeft);
+        }
+        if (burstActiveRight != null) {
+            removeFromBurstPools(burstActiveRight);
+        }
+        if (burstPane != null) {
+            burstPane.requestFocus();
+        }
+        showBurstPair();
+    }
+
+    private void applyFilmstripGray(File file) {
+        if (file == null) {
+            return;
+        }
+        StackPane card = burstFilmstripCards.get(file.getAbsolutePath());
+        if (card == null || card.getChildren().isEmpty()) {
+            return;
+        }
+        javafx.scene.Node node = card.getChildren().get(0);
+        if (node instanceof ImageView) {
+            javafx.scene.effect.ColorAdjust gray = new javafx.scene.effect.ColorAdjust();
+            gray.setSaturation(-1.0);
+            node.setEffect(gray);
+        }
     }
 
     private void preloadBurstImages(List<File> group) {
@@ -1242,7 +1698,7 @@ public class Picknick extends Application {
             }
             return new Image(sourceFile.toURI().toString());
         } catch (IOException e) {
-            e.printStackTrace();
+            System.out.println("Burst preview failed for " + file.getName() + ": " + e.getMessage());
         }
         return null;
     }
@@ -2289,6 +2745,32 @@ public class Picknick extends Application {
             return true;
         }
         return false;
+    }
+
+    private boolean isInSkipFolder(File file) {
+        if (file == null || sessionSkipDirectory == null) {
+            return false;
+        }
+        try {
+            String skipPath = sessionSkipDirectory.getCanonicalPath();
+            String filePath = file.getParentFile().getCanonicalPath();
+            return filePath.equals(skipPath);
+        } catch (IOException e) {
+            return file.getParentFile().equals(sessionSkipDirectory);
+        }
+    }
+
+    private boolean isInSessionRoot(File file) {
+        if (file == null || currentSession == null || currentSession.directory == null) {
+            return false;
+        }
+        try {
+            String rootPath = currentSession.directory.getCanonicalPath();
+            String filePath = file.getParentFile().getCanonicalPath();
+            return filePath.equals(rootPath);
+        } catch (IOException e) {
+            return file.getParentFile().equals(currentSession.directory);
+        }
     }
 
     private Path findUniqueTargetPath(Path targetPath) {
