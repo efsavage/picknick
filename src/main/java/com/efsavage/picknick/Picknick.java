@@ -59,6 +59,9 @@ import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 
 import org.tomlj.Toml;
 import org.tomlj.TomlParseResult;
@@ -108,6 +111,7 @@ public class Picknick extends Application {
     private File importDirectory;
     private File sessionDirectory;
     private File movDirectory;
+    private File cacheDirectory;
     private File sessionKeepDirectory;
     private File sessionSkipDirectory;
     private File sessionMaybeDirectory;
@@ -163,6 +167,7 @@ public class Picknick extends Application {
         importDirectory = new File(rootDirectory, "import");
         sessionDirectory = new File(rootDirectory, "session");
         movDirectory = new File(rootDirectory, "mov");
+        cacheDirectory = new File(rootDirectory, ".cache");
         if (!rootDirectory.exists()) {
             rootDirectory.mkdirs();
         }
@@ -171,6 +176,7 @@ public class Picknick extends Application {
         }
         sessionDirectory.mkdirs();
         movDirectory.mkdirs();
+        cacheDirectory.mkdirs();
     }
 
     private void setupViewerToolBar() {
@@ -383,8 +389,11 @@ public class Picknick extends Application {
         Label title = new Label(formatSessionTitle(session));
         title.setStyle("-fx-font-weight: bold;");
 
-        Label subtitle = new Label(formatSessionSubtitle(session));
+        Label subtitle = new Label(formatSessionDateRange(session));
         subtitle.setStyle("-fx-text-fill: #666;");
+
+        Label stats = new Label(formatSessionStats(session));
+        stats.setStyle("-fx-text-fill: #666;");
 
         ProgressBar progressBar = new ProgressBar();
         progressBar.setPrefWidth(216);
@@ -419,7 +428,8 @@ public class Picknick extends Application {
         HBox actionRow = new HBox(8, reviewButton, viewButton, archiveButton);
         actionRow.setAlignment(Pos.CENTER_LEFT);
 
-        VBox card = new VBox(8, thumbnail, title, subtitle, progressRow, actionRow);
+        VBox metaBox = new VBox(2, subtitle, stats);
+        VBox card = new VBox(8, thumbnail, title, metaBox, progressRow, actionRow);
         card.setPadding(new Insets(12));
         card.setPrefWidth(240);
         card.setStyle("-fx-background-color: #f7f7f7; -fx-background-radius: 10; -fx-border-radius: 10; -fx-border-color: #e0e0e0;");
@@ -833,7 +843,8 @@ public class Picknick extends Application {
             if (preloadedImages.containsKey(fileKey)) {
                 Image image = preloadedImages.get(fileKey);
                 imageView.setImage(image);
-                tempImageFile = preloadedTempFiles.get(fileKey);
+                File preloadedTemp = preloadedTempFiles.get(fileKey);
+                tempImageFile = (preloadedTemp != null && !isCacheFile(preloadedTemp)) ? preloadedTemp : null;
                 String captureDateTime = preloadedCaptureDates.get(fileKey);
 
                 resetImageViewTransforms();
@@ -870,7 +881,7 @@ public class Picknick extends Application {
                     protected void succeeded() {
                         super.succeeded();
                         if (imageFiles.size() > currentIndex && imageFiles.get(currentIndex).equals(nefFile)) {
-                            tempImageFile = tempFile;
+                            tempImageFile = (tempFile != null && !isCacheFile(tempFile)) ? tempFile : null;
                             imageView.setImage(image);
 
                             preloadedImages.put(fileKey, image);
@@ -1102,7 +1113,6 @@ public class Picknick extends Application {
             File tempFile = null;
             if (!isJpeg(file)) {
                 tempFile = convertNEFToJPEG(file);
-                sessionThumbnailTempFiles.add(tempFile);
                 sourceFile = tempFile;
             }
             return new Image(sourceFile.toURI().toString(), targetWidth, 0, true, true);
@@ -1524,24 +1534,14 @@ public class Picknick extends Application {
         if (session.unknown) {
             return "Unknown Session";
         }
-        if (session.start == null || session.end == null) {
-            return session.displayName != null ? session.displayName : session.folderName;
-        }
-        SimpleDateFormat dateFormat = new SimpleDateFormat("EEE MMM d, yyyy h:mm a", Locale.ENGLISH);
-        return dateFormat.format(session.start) + " - " + dateFormat.format(session.end);
+        return session.displayName != null ? session.displayName : session.folderName;
     }
 
-    private String formatSessionSubtitle(Session session) {
-        String base;
+    private String formatSessionStats(Session session) {
         if (session.totalCount > 0) {
-            base = session.remainingCount + " remaining of " + session.totalCount;
-        } else {
-            base = session.files.size() + " remaining";
+            return session.remainingCount + " remaining of " + session.totalCount;
         }
-        if (session.displayName != null && !session.displayName.isBlank()) {
-            return base + " • " + session.displayName;
-        }
-        return base;
+        return session.files.size() + " remaining";
     }
 
     private String formatSessionPercent(Session session) {
@@ -1551,6 +1551,27 @@ public class Picknick extends Application {
         int completed = session.totalCount - session.remainingCount;
         int percent = (int) Math.round((completed * 100.0) / session.totalCount);
         return percent + "%";
+    }
+
+    private String formatSessionDateRange(Session session) {
+        if (session.start == null || session.end == null) {
+            return "";
+        }
+        ZonedDateTime start = ZonedDateTime.ofInstant(session.start.toInstant(), ZoneId.systemDefault());
+        ZonedDateTime end = ZonedDateTime.ofInstant(session.end.toInstant(), ZoneId.systemDefault());
+
+        boolean includeYear = start.isBefore(ZonedDateTime.now().minusYears(1));
+        boolean sameDay = start.toLocalDate().equals(end.toLocalDate());
+
+        DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern(includeYear ? "EEE MMM d, yyyy" : "EEE MMM d", Locale.ENGLISH);
+        DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
+        DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern(includeYear ? "EEE MMM d, yyyy h:mm a" : "EEE MMM d h:mm a", Locale.ENGLISH);
+
+        if (sameDay) {
+            return dateFormatter.format(start) + " " + timeFormatter.format(start) + " – " + timeFormatter.format(end);
+        }
+
+        return dateTimeFormatter.format(start) + " – " + dateTimeFormatter.format(end);
     }
 
     private void resetImageViewTransforms() {
@@ -1594,8 +1615,14 @@ public class Picknick extends Application {
     }
 
     private File convertNEFToJPEG(File nefFile) throws IOException {
-        File jpegFile = File.createTempFile("temp_image", ".jpg");
-        jpegFile.deleteOnExit();
+        File cached = getCachedJpeg(nefFile);
+        if (cached != null) {
+            return cached;
+        }
+
+        String cacheKey = computeCacheKey(nefFile);
+        File cacheFile = new File(cacheDirectory, cacheKey + ".jpg");
+        File tempFile = new File(cacheDirectory, cacheKey + ".tmp");
 
         String[] command = {
                 dcrawPath,
@@ -1605,7 +1632,7 @@ public class Picknick extends Application {
         };
 
         ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectOutput(jpegFile);
+        pb.redirectOutput(tempFile);
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);
         Process process = pb.start();
 
@@ -1619,7 +1646,12 @@ public class Picknick extends Application {
             throw new IOException("dcraw process was interrupted", e);
         }
 
-        return jpegFile;
+        try {
+            Files.move(tempFile.toPath(), cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            Files.move(tempFile.toPath(), cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        }
+        return cacheFile;
     }
 
     private void keepImage() {
@@ -1694,6 +1726,44 @@ public class Picknick extends Application {
         }
         String name = file.getName().toLowerCase();
         return name.endsWith(".jpg") || name.endsWith(".jpeg");
+    }
+
+    private boolean isCacheFile(File file) {
+        if (file == null || cacheDirectory == null) {
+            return false;
+        }
+        try {
+            return file.getCanonicalPath().startsWith(cacheDirectory.getCanonicalPath());
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private File getCachedJpeg(File nefFile) {
+        if (nefFile == null || cacheDirectory == null) {
+            return null;
+        }
+        String cacheKey = computeCacheKey(nefFile);
+        File cacheFile = new File(cacheDirectory, cacheKey + ".jpg");
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            return cacheFile;
+        }
+        return null;
+    }
+
+    private String computeCacheKey(File file) {
+        String keySource = file.getAbsolutePath() + "|" + file.lastModified() + "|" + file.length();
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-1");
+            byte[] hash = digest.digest(keySource.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return Integer.toHexString(keySource.hashCode());
+        }
     }
 
     private boolean moveToDirectory(File file, File targetDirectory) {
