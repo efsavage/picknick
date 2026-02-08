@@ -13,6 +13,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ToolBar;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
@@ -71,6 +72,8 @@ public class Picknick extends Application {
     private ToolBar homeToolBar;
     private VBox homeContent;
     private ListView<Session> sessionListView;
+    private Label homeSubtitle;
+    private ProgressIndicator homeProgress;
     private DoubleBinding viewerFitWidth;
     private DoubleBinding viewerFitHeight;
 
@@ -259,8 +262,15 @@ public class Picknick extends Application {
         Label title = new Label("Picknick Sessions");
         title.setStyle("-fx-font-size: 20px; -fx-font-weight: bold;");
 
-        Label subtitle = new Label("Scanning for sessions in: " + importDirectory.getAbsolutePath());
-        subtitle.setStyle("-fx-text-fill: #444;");
+        homeSubtitle = new Label(importDirectory.getAbsolutePath());
+        homeSubtitle.setStyle("-fx-text-fill: #444;");
+
+        homeProgress = new ProgressIndicator();
+        homeProgress.setVisible(false);
+        homeProgress.setPrefSize(18, 18);
+
+        HBox headerRow = new HBox(10, title, homeProgress);
+        headerRow.setAlignment(Pos.CENTER_LEFT);
 
         sessionListView = new ListView<>();
         sessionListView.setCellFactory(list -> new SessionCell());
@@ -273,15 +283,37 @@ public class Picknick extends Application {
             }
         });
 
-        VBox container = new VBox(10, title, subtitle, sessionListView);
+        VBox container = new VBox(10, headerRow, homeSubtitle, sessionListView);
         container.setPadding(new Insets(16));
         VBox.setVgrow(sessionListView, Priority.ALWAYS);
         return container;
     }
 
     private void refreshSessions() {
-        List<Session> sessions = rescanSessions();
-        sessionListView.getItems().setAll(sessions);
+        setHomeBusy(true, "Scanning import...");
+
+        Task<List<Session>> scanTask = new Task<>() {
+            @Override
+            protected List<Session> call() {
+                return rescanSessions();
+            }
+        };
+
+        scanTask.setOnSucceeded(event -> {
+            List<Session> sessions = scanTask.getValue();
+            sessionListView.getItems().setAll(sessions);
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+        });
+
+        scanTask.setOnFailed(event -> {
+            Throwable error = scanTask.getException();
+            if (error != null) {
+                showAlert("Scan Failed", error.getMessage());
+            }
+            setHomeBusy(false, "Import folder: " + importDirectory.getAbsolutePath());
+        });
+
+        new Thread(scanTask).start();
     }
 
     private List<Session> rescanSessions() {
@@ -399,8 +431,17 @@ public class Picknick extends Application {
     }
 
     private void moveImportsToSessions() {
-        File[] files = importDirectory.listFiles((dir, name) -> name.toLowerCase().endsWith(".nef"));
-        if (files == null || files.length == 0) {
+        List<File> allFiles = new ArrayList<>();
+        try {
+            Files.walk(importDirectory.toPath())
+                    .filter(path -> Files.isRegularFile(path))
+                    .filter(path -> path.toString().toLowerCase().endsWith(".nef"))
+                    .forEach(path -> allFiles.add(path.toFile()));
+        } catch (IOException e) {
+            showAlert("Error", "Failed to scan import folder: " + e.getMessage());
+        }
+
+        if (allFiles.isEmpty()) {
             pruneEmptyDirectories(importDirectory);
             return;
         }
@@ -409,7 +450,7 @@ public class Picknick extends Application {
         List<File> unknown = new ArrayList<>();
         Map<File, Date> captureDates = new HashMap<>();
 
-        for (File file : files) {
+        for (File file : allFiles) {
             Date captureDate = getCaptureDate(file);
             if (captureDate != null) {
                 captureDates.put(file, captureDate);
@@ -907,6 +948,26 @@ public class Picknick extends Application {
             alert.setHeaderText(null);
             alert.setTitle(title);
             alert.showAndWait();
+        });
+    }
+
+    private void updateHomeSubtitle(String text) {
+        if (homeSubtitle == null) {
+            return;
+        }
+        Platform.runLater(() -> homeSubtitle.setText(text));
+    }
+
+    private void setHomeBusy(boolean busy, String subtitle) {
+        if (homeProgress == null) {
+            updateHomeSubtitle(subtitle);
+            return;
+        }
+        Platform.runLater(() -> {
+            homeProgress.setVisible(busy);
+            sessionListView.setDisable(busy);
+            homeToolBar.setDisable(busy);
+            homeSubtitle.setText(subtitle);
         });
     }
 
