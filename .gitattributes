@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repository (and on checkout).
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF so cmd.exe / PowerShell handle them correctly.
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+# Unix shell scripts and the Maven wrapper stay LF.
+*.sh   text eol=lf
+mvnw   text eol=lf
+
+# Binary assets — never normalize or diff as text.
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.jpeg binary
+*.jar  binary
+*.nef  binary
+*.mov  binary
