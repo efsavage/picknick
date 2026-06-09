@@ -1,181 +1,215 @@
-
 # Picknick
 
-Picknick is a simple JavaFX application designed to help you quickly sort through your Nikon NEF (RAW) image files. It allows you to preview images, zoom in for details, and categorize them into `keep`, `skip`, or `maybe` folders with easy keyboard shortcuts.
+Picknick is a JavaFX desktop app for culling large batches of Nikon NEF (RAW) photos
+(JPEGs are supported too). It groups your imports into **sessions** by capture time, then
+lets you rapidly sort each shot into `keep`, `skip`, or `maybe` with single-key shortcuts.
+For rapid-fire bursts it offers a side-by-side **burst review** mode to quickly pick the
+best frame.
 
 ## Table of Contents
 
--   [Features](#features)
--   [Prerequisites](#prerequisites)
--   [Installation and Setup](#installation-and-setup)
--   [Running the Application](#running-the-application)
--   [Usage Instructions](#usage-instructions)
--   [Processing Flow](#processing-flow)
--   [Troubleshooting](#troubleshooting)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Directory Layout](#directory-layout)
+- [Running the Application](#running-the-application)
+- [Usage](#usage)
+  - [Home / Sessions](#home--sessions)
+  - [Review (viewer)](#review-viewer)
+  - [Burst review](#burst-review)
+  - [Gallery](#gallery)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
+- [How It Works](#how-it-works)
+- [Windows Installer](#windows-installer)
+- [Troubleshooting](#troubleshooting)
 
 ## Features
 
--   **Image Preview:** Quickly preview NEF images.
--   **Zooming and Panning:** Double-click to zoom in/out and drag to pan when zoomed.
--   **Easy Categorization:** Use keyboard shortcuts to move images to `keep`, `skip`, or `maybe` folders.
--   **Batch Preloading:** Preloads the next 10 images for faster browsing.
--   **Metadata Display:** Shows the capture date and time in the title bar.
--   **Resource Management:** Efficiently handles temporary files and memory usage.
+- **Sessions:** Imports are automatically grouped into sessions by capture time (a gap of
+  more than one hour starts a new session).
+- **Fast culling:** Sort each image into `keep`, `skip`, or `maybe` with one keystroke.
+- **Burst review:** Photos shot within ~2 seconds of each other are detected as a burst and
+  reviewed king-of-the-hill style — a reigning "champion" frame is compared against each
+  challenger in turn so the best shot rises to the top. You can bank several keepers from one
+  burst, undo any decision, and nothing is committed to disk until the burst ends.
+- **Gallery:** Browse a session's thumbnails color-coded by state, and split a session at any
+  image.
+- **Merge & split:** Drag one session onto another to merge them; split a session around any
+  photo from the gallery.
+- **Archiving & rename:** Archive finished sessions and rename them inline.
+- **Zoom & rotate:** Double-click to zoom, drag to pan, rotate in 90° steps.
+- **Fast previews:** Converted JPEGs are cached on disk (in `.cache`) keyed by file content, and
+  opening a session pre-converts its RAWs in the background so images and burst pairs appear
+  instantly. Capture dates and thumbnails are cached in memory (the thumbnail cache is bounded).
+- **Window state:** Window position, size, and full-screen state are remembered between runs.
 
 ## Prerequisites
 
-Before running Picknick, ensure that you have the following installed on your system:
+1. **Java Development Kit (JDK) 17 or higher** — e.g. [Adoptium / Temurin](https://adoptium.net/).
+2. **dcraw** — a command-line RAW decoder, used to convert NEF files to JPEG for display.
+   It must be installed and available on your `PATH`. Verify with `dcraw` in a terminal;
+   it should print usage information.
 
-1.  **Java Development Kit (JDK) 17 or higher**
+## Directory Layout
 
-    -   Download and install from [Oracle's website](https://www.oracle.com/java/technologies/javase-downloads.html) or use OpenJDK from [AdoptOpenJDK](https://adoptopenjdk.net/).
-2.  **dcraw**
+Picknick works inside a single root directory. By default this is hardcoded to
+`x:/Dropbox/picknick` (see `rootDirectoryPath` in
+[`Picknick.java`](src/main/java/com/efsavage/picknick/Picknick.java)); change that constant
+to point at your own location. On startup Picknick creates the following subfolders:
 
-    -   A command-line tool for decoding raw image data.
-    -   Install via your package manager or download from dcraw's website.
-## Installation and Setup
+```
+<root>/
+  import/    <- drop new NEF/JPG/MOV files here, then click "Rescan"
+  session/   <- one folder per session: YYYYMMDD-N (and "unknown" for undated files)
+  mov/       <- .MOV video files are routed here, untouched
+  .cache/    <- cached JPEG previews (safe to delete; regenerated on demand)
+```
 
-1.  **Clone or Download the Source Code**
-
-    -   Clone the repository or download the source code to your local machine.
-2.  **Ensure `dcraw` Is Accessible**
-
-    -   Make sure `dcraw` is installed and accessible via your system's `PATH` environment variable.
-3.  **Adjust the Initial Directory Path (Optional)**
-
-    -   Open `Picknick.java` in a text editor.
-
-    -   Locate the line:
-
-        java
-
-        Copy code
-
-        `private String initialDirectoryPath = "x:/Dropbox/z8/import/pick";`
-
-    -   Change the path to your preferred default directory or leave it as is to select a directory at runtime.
-
+Within each session folder, sorted images are moved into `keep/`, `skip/`, and `maybe/`
+subfolders; unsorted images sit in the session root. A small `session.toml` records the
+session's display name, creation time, archived flag, and total count.
 
 ## Running the Application
 
-Follow these steps to build and run Picknick with Maven:
+From the project directory:
 
-1.  **Open a Terminal or Command Prompt**
+```powershell
+# Windows — builds (incrementally) and launches
+.\run.cmd
+```
 
-2.  **Navigate to the Project Directory**
+`run.cmd` is just a convenience wrapper around the Maven wrapper. The equivalent direct commands:
 
-    bash
+```powershell
+# Windows
+.\mvnw.cmd compile javafx:run
+```
 
-    Copy code
+```bash
+# macOS / Linux
+./mvnw compile javafx:run
+```
 
-    `cd path/to/your/project`
+Run from the project directory — the Maven wrapper resolves its configuration relative to the
+current folder.
 
-3.  **Run the Application**
+## Usage
 
-    bash
+### Home / Sessions
 
-    Copy code
+The home screen shows a card per session with a thumbnail, capture date range, progress, and
+three actions:
 
-    `./mvnw javafx:run`
+- **Review** — open the viewer and start culling unsorted images.
+- **View** — open the read-only gallery of all images in the session.
+- **Archive / Unarchive** — hide a finished session (toggle "Show archived" to see them).
 
-    -   On Windows, use `mvnw.cmd javafx:run`.
+Other gestures:
 
-## Windows Installer (Start Menu Shortcut)
+- **Rescan** — scan the `import/` folder and file new media into sessions.
+- **Double-click a card title** — rename the session.
+- **Drag one card onto another** — merge the dragged session into the target.
 
-To create an installer with a Start Menu shortcut, use the PowerShell script:
+### Review (viewer)
 
-1.  **Open PowerShell**
-2.  **Run the packaging script**
+Each unsorted image is shown full-window. Sort it with `k` / `s` / `m` (or the toolbar
+buttons); the file moves to the matching subfolder and the next image loads. The next several
+images are converted and preloaded in the background for snappy browsing. When all images are
+sorted, a completion message appears and you return to the home screen.
 
-    ```powershell
-    .\\scripts\\windows\\package.ps1
-    ```
+If the next image belongs to a detected burst, Picknick automatically switches to burst
+review.
 
-    -   This creates an app-image by default in `target\\installer` and adds a Start Menu shortcut.
-    -   For an EXE installer (requires WiX Toolset on PATH):
+### Burst review
 
-    ```powershell
-    .\\scripts\\windows\\package.ps1 -Type exe
+Bursts are reviewed **king-of-the-hill** style (the default; toggle **King of the hill** off in
+the burst toolbar to use the older random tournament instead). The reigning **champion** is shown
+on the **left** (green border, 👑) and the next **challenger** in capture order on the **right**,
+with a filmstrip of the whole burst above.
 
-    -   For an MSI installer (also requires WiX Toolset on PATH):
+- **←** — champion stays; the challenger is discarded.
+- **→** — the challenger wins and becomes the new champion; the old champion is discarded.
+- **↓** — discard both and move on.
+- **B** — **bank** the champion as a definite keeper and keep comparing the rest (use this to keep
+  more than one distinct moment from a single burst). Banked frames get a green border in the
+  filmstrip.
+- **A** — keep all remaining candidates.
+- **U** — **undo** the last decision.
+- **Click any filmstrip thumbnail** to pull it in as the challenger — even one already seen or
+  discarded (the champion can't challenge itself).
+- Scroll to zoom, drag to pan (both images move together).
 
-    ```powershell
-    .\\scripts\\windows\\package.ps1 -Type msi
-    ```
-    ```
+**Nothing is moved on disk until the burst ends** — so changing your mind is free and `U` always
+works. When the burst finishes, banked frames and the champion you chose go to `keep` and the
+rest go to `skip` (shown via a brief progress dialog for large bursts). If you skip straight
+through a burst without ever choosing a champion, the leftover frame is **not** kept — it falls
+through to normal single-image review so a whole bad batch can be rejected.
 
-Requirements:
--   JDK 17+ with `jpackage` on `PATH`
--   `dcraw` on `PATH`
--   `icon.ico` in the repo root (generated from `icon.png`)
+### Gallery
 
-## Usage Instructions
+A grid of thumbnails for the session, bordered by state (keep = green, maybe = orange,
+skip = red, unsorted = grey). Toggle **Show rejected** to include skipped images. Right-click
+any image to **split the session before/after** that photo into a new session.
 
-1.  **Select the Initial Directory**
+## Keyboard Shortcuts
 
-    -   Upon launching, a directory chooser will appear.
-    -   Navigate to the folder containing your NEF files and select it.
-    -   The application will create `keep`, `skip`, and `maybe` subdirectories within this folder.
-2.  **Keyboard Shortcuts**
+| Context | Key | Action |
+| --- | --- | --- |
+| Viewer | `k` | Keep |
+| Viewer | `s` | Skip |
+| Viewer | `m` | Maybe |
+| Viewer | `r` | Rotate clockwise |
+| Viewer | `e` | Rotate counter-clockwise |
+| Viewer | `F11` | Toggle full screen |
+| Burst | `←` | Champion stays; discard challenger |
+| Burst | `→` | Challenger wins; discard old champion |
+| Burst | `↓` | Discard both |
+| Burst | `B` | Bank champion as a keeper, keep comparing |
+| Burst | `A` | Keep all remaining |
+| Burst | `U` | Undo last decision |
 
-    -   **`k`**: Keep the image (moves it to the `keep` directory).
-    -   **`s`**: Skip the image (moves it to the `skip` directory).
-    -   **`m`**: Mark as maybe (moves it to the `maybe` directory).
-    -   **`F11`**: Toggle full-screen mode.
-3.  **Toolbar Buttons**
+Double-click an image in the viewer to zoom; drag to pan while zoomed. In burst review, click a
+filmstrip thumbnail to make it the challenger.
 
-    -   **Keep**: Click to keep the image.
-    -   **Skip**: Click to skip the image.
-    -   **Maybe**: Click to mark the image as maybe.
-4.  **Zooming and Panning**
+## How It Works
 
-    -   **Double-click** on the image to zoom in by 200%.
-    -   **Double-click** again to zoom out.
-    -   When zoomed in, **click and drag** to pan around the image.
-5.  **Title Bar Information**
+- **Capture time** is read from EXIF (`DateTimeOriginal`, falling back to `DateTime`), refined
+  with sub-second precision when available, via the
+  [metadata-extractor](https://github.com/drewnoakes/metadata-extractor) library.
+- **Sessions** are formed by sorting imports by capture time and starting a new group whenever
+  the gap exceeds one hour. Bursts are formed similarly with a 2-second gap.
+- **Display previews** are produced by invoking `dcraw -e -c` to extract the embedded JPEG,
+  cached under `.cache/` keyed by a SHA-1 of the source path, size, and modified time. Opening a
+  session warms this cache in the background, so by the time you reach an image it is usually
+  already decoded.
+- **File moves are verified** — each move copies to a temp file, compares size and MD5 hash
+  against the source, then atomically renames and deletes the original. Name collisions with
+  identical content are de-duplicated; collisions with different content get a numeric suffix.
 
-    -   The application's title bar displays the filename and capture date/time if available, e.g.:
+## Windows Installer
 
-        yaml
+To build an app-image with a Start Menu shortcut (requires JDK 17+ with `jpackage` on `PATH`,
+`dcraw` on `PATH`, and `icon.ico` in the repo root):
 
-        Copy code
+```powershell
+.\scripts\windows\package.ps1
+```
 
-        `Picknick - DSC_0001.NEF - Mon Sep 20 14:30:00 EDT 2023`
+For an `.exe` or `.msi` installer (requires the [WiX Toolset](https://wixtoolset.org/) on
+`PATH`):
 
-
-## Processing Flow
-
--   **Image Loading**
-
-    -   The application processes images in the selected directory.
-    -   It preloads the next 10 images in the background for faster viewing.
--   **Categorization**
-
-    -   Use keyboard shortcuts or toolbar buttons to categorize images.
-    -   Images are moved to the corresponding subdirectories.
--   **Automatic Progression**
-
-    -   After processing all images in the main directory, the application automatically proceeds to the `maybe` directory if it exists.
--   **Completion**
-
-    -   Once all images are processed, the application cleans up any temporary files and empty directories.
-    -   A completion message is displayed.
-    -   After dismissing the message, the `keep` directory is opened, and the application exits.
+```powershell
+.\scripts\windows\package.ps1 -Type exe
+.\scripts\windows\package.ps1 -Type msi
+```
 
 ## Troubleshooting
 
--   **dcraw Not Found**
-
-    -   Ensure that `dcraw` is installed and added to your system's `PATH`.
-    -   Test by running `dcraw` in your terminal; it should display usage information.
--   **JavaFX Errors**
-
-    -   Make sure you have JDK 8 or higher, which includes JavaFX.
-    -   If using JDK 11 or higher, you may need to add JavaFX modules manually.
--   **Cannot Find `metadata-extractor`**
-
-    -   Verify that the JAR file is in the same directory and the classpath is set correctly when compiling and running.
--   **Performance Issues**
-
-    -   Preloading 10 images can be resource-intensive.
-    -   Adjust the `PRELOAD_COUNT` constant in the code to a lower number if needed.
+- **dcraw not found** — ensure `dcraw` is installed and on your `PATH`; test by running
+  `dcraw` in a terminal.
+- **Images fail to load** — a NEF that dcraw can't decode is automatically moved to the
+  session's `skip` folder and skipped.
+- **Wrong root directory** — edit the `rootDirectoryPath` constant in `Picknick.java`.
+- **Performance** — previews are cached after first view; the first pass over a large session
+  is the slowest. Lower `PRELOAD_COUNT` in the code to reduce memory use during review.
+</content>
+</invoke>

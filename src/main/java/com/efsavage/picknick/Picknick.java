@@ -52,6 +52,7 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -130,6 +131,21 @@ public class Picknick extends Application {
     private final java.util.Random burstRandom = new java.util.Random();
     private List<File> burstGroupFiles = new ArrayList<>();
     private String currentBurstGroupKey;
+
+    // King-of-the-hill burst review (default). Decisions are deferred: nothing is moved on disk
+    // until the burst finishes, so changing your mind ("found a better one") and undo are free.
+    private boolean burstKingMode = true;
+    private CheckBox burstModeCheckBox;
+    private static final String PREF_BURST_KING = "burst.king";
+    private File burstChampion;                                 // reigning best, shown on the left
+    private boolean burstChampionEndorsed;                      // did the user actually pick this champion?
+    private final Deque<File> burstChallengerQueue = new ArrayDeque<>(); // remaining, in capture order
+    private final List<File> burstKeepers = new ArrayList<>();  // banked + final champion -> keep at end
+    private final List<File> burstDiscards = new ArrayList<>(); // losers -> skip at end
+    private final Deque<BurstSnapshot> burstUndoStack = new ArrayDeque<>();
+    private Button burstBankButton;
+    private Button burstUndoButton;
+
     private CheckBox showRejectedCheckBox;
     private Label homeSubtitle;
     private ProgressIndicator homeProgress;
@@ -159,8 +175,31 @@ public class Picknick extends Application {
     private final ExecutorService thumbnailExecutor = Executors.newFixedThreadPool(2);
     private static final int PRELOAD_COUNT = 10;
 
-    private final Map<String, Image> sessionThumbnailCache = new ConcurrentHashMap<>();
+    // Small thumbnails (filmstrip / gallery / session cards). Bounded LRU so a large shoot can't
+    // grow it without limit; evicted thumbs are simply re-decoded if scrolled back to.
+    private static final int THUMBNAIL_CACHE_MAX = 800;
+    private final Map<String, Image> sessionThumbnailCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(128, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Image> eldest) {
+                    return size() > THUMBNAIL_CACHE_MAX;
+                }
+            });
     private final List<File> sessionThumbnailTempFiles = Collections.synchronizedList(new ArrayList<>());
+
+    // Full-resolution burst previews are large, so they live in their own cache that is cleared
+    // whenever we enter or leave a burst — bounded to the group currently under review.
+    private final Map<String, Image> burstPreviewCache = new ConcurrentHashMap<>();
+
+    // Background conversion of a whole session's RAWs to cached JPEGs on open, so review/burst
+    // pairs appear instantly. A generation counter lets stale warm-ups bail when the session changes.
+    private final ExecutorService cacheWarmExecutor = Executors.newFixedThreadPool(3);
+    private volatile int warmupGeneration = 0;
+
+    // Cache of EXIF capture dates keyed by path|lastModified|length. getCaptureDate is called
+    // repeatedly per file (including inside sort comparators), so reading EXIF every time is costly.
+    private static final Date NO_CAPTURE_DATE = new Date(Long.MIN_VALUE);
+    private final Map<String, Date> captureDateCache = new ConcurrentHashMap<>();
 
     private boolean isViewerActive = false;
     private Session currentSession;
@@ -251,12 +290,17 @@ public class Picknick extends Application {
 
     private void setupBurstToolBar() {
         Button backButton = new Button("Exit Burst");
-        backButton.setOnAction(e -> exitBurstMode());
+        backButton.setOnAction(e -> abortBurst());
 
-        Label hint = new Label("←/→ picks winner, ↓ skips both, A keeps all");
-        hint.setStyle("-fx-text-fill: #555;");
+        burstKingMode = preferences.getBoolean(PREF_BURST_KING, true);
+        burstModeCheckBox = new CheckBox("King of the hill");
+        burstModeCheckBox.setSelected(burstKingMode);
+        burstModeCheckBox.setOnAction(e -> {
+            burstKingMode = burstModeCheckBox.isSelected();
+            preferences.putBoolean(PREF_BURST_KING, burstKingMode);
+        });
 
-        burstToolBar = new ToolBar(backButton, hint);
+        burstToolBar = new ToolBar(backButton, burstModeCheckBox);
     }
 
     private void setupHomeToolBar() {
@@ -264,10 +308,12 @@ public class Picknick extends Application {
         rescanButton.setOnAction(e -> refreshSessions(true));
 
         Button mergeButton = new Button("Merge Sessions");
-        mergeButton.setOnAction(e -> showAlert("Merge Sessions", "Merge UI coming soon."));
+        mergeButton.setOnAction(e -> showAlert("Merge Sessions",
+                "Drag one session card onto another to merge them."));
 
         Button splitButton = new Button("Split Session");
-        splitButton.setOnAction(e -> showAlert("Split Session", "Split UI coming soon."));
+        splitButton.setOnAction(e -> showAlert("Split Session",
+                "Open a session with View, then right-click an image and choose \"Split before/after this\"."));
 
         showArchivedCheckBox = new CheckBox("Show archived");
         showArchivedCheckBox.setOnAction(e -> refreshSessions(false));
@@ -310,11 +356,18 @@ public class Picknick extends Application {
     }
 
     private void setupSceneShortcuts(Scene scene) {
+        // Handle burst keys in the capturing phase, before any focused control (e.g. the filmstrip
+        // ScrollPane) can swallow the arrow keys. This keeps the burst controls working no matter
+        // what was last clicked.
+        scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+            if (isBurstActive && isBurstKey(event.getCode())) {
+                handleBurstKey(event.getCode());
+                event.consume();
+            }
+        });
+
         scene.setOnKeyPressed(event -> {
             if (!isViewerActive) {
-                if (isBurstActive) {
-                    handleBurstKey(event.getCode());
-                }
                 return;
             }
             if (event.getCode() == KeyCode.K) {
@@ -352,6 +405,8 @@ public class Picknick extends Application {
         isBurstActive = false;
         currentSession = null;
         gallerySession = null;
+        warmupGeneration++;          // stop warming the session we just left
+        burstPreviewCache.clear();
         updateTitle(null);
 
         if (homeContent == null) {
@@ -585,10 +640,6 @@ public class Picknick extends Application {
                 commit.run();
             }
         });
-    }
-
-    private void mergeSessions(File sourceDir, Session targetSession) {
-        mergeSessionsWithProgress(sourceDir, targetSession, null);
     }
 
     private void mergeSessionsWithProgress(File sourceDir, Session targetSession, ProgressReporter task) {
@@ -889,7 +940,38 @@ public class Picknick extends Application {
         BorderPane.setMargin(imageView, new Insets(10));
 
         prepareBurstGroups(session);
+        prewarmSessionCache(session);
         showImage();
+    }
+
+    // Convert every RAW in the session to its cached JPEG in the background, so that by the time
+    // the user reaches an image (or a burst pair) the decode is already done. Idempotent: files
+    // already cached on disk return immediately. Stale warm-ups stop when the session changes.
+    private void prewarmSessionCache(Session session) {
+        if (session == null || session.directory == null) {
+            return;
+        }
+        final int generation = ++warmupGeneration;
+        List<File> files = new ArrayList<>();
+        files.addAll(listMediaFiles(session.directory));
+        files.addAll(listMediaFiles(new File(session.directory, "keep")));
+        files.addAll(listMediaFiles(new File(session.directory, "maybe")));
+        files.addAll(listMediaFiles(new File(session.directory, "skip")));
+        for (File file : files) {
+            if (isJpeg(file)) {
+                continue;   // nothing to convert
+            }
+            cacheWarmExecutor.submit(() -> {
+                if (generation != warmupGeneration) {
+                    return;   // a newer session is being warmed; abandon this one
+                }
+                try {
+                    convertNEFToJPEG(file);
+                } catch (IOException e) {
+                    // A frame that won't decode is handled when it is actually shown; ignore here.
+                }
+            });
+        }
     }
 
     private void showGallery(Session session) {
@@ -1017,15 +1099,23 @@ public class Picknick extends Application {
         burstNextPool.clear();
         burstActiveLeft = null;
         burstActiveRight = null;
+        resetKingBurstState();
         burstGroupFiles = new ArrayList<>(group);
         currentBurstGroupKey = burstGroupKey(group);
         for (File file : group) {
             if (isInSessionRoot(file)) {
-                burstCurrentPool.add(file);
+                burstCurrentPool.add(file);   // unreviewed candidates, in capture order
             }
         }
         if (burstCurrentPool.size() < 2) {
+            // Not enough unreviewed frames to compare (e.g. the rest were already sorted).
+            // Mark the group done and resume normal viewing instead of soft-locking the UI.
             completedBurstGroups.add(currentBurstGroupKey);
+            isBurstActive = false;
+            isViewerActive = true;
+            rootPane.setTop(viewerToolBar);
+            rootPane.setCenter(imageView);
+            showImage();
             return;
         }
         updateTitle("Burst Review");
@@ -1088,16 +1178,23 @@ public class Picknick extends Application {
             Button leftWinButton = new Button("Left Wins");
             Button rightWinButton = new Button("Right Wins");
             Button skipBothButton = new Button("Skip Both");
+            burstBankButton = new Button("Bank Keeper (b)");
+            burstUndoButton = new Button("Undo (u)");
             Button keepAllButton = new Button("Keep All");
             leftWinButton.setOnAction(e -> handleBurstKey(KeyCode.LEFT));
             rightWinButton.setOnAction(e -> handleBurstKey(KeyCode.RIGHT));
             skipBothButton.setOnAction(e -> handleBurstKey(KeyCode.DOWN));
+            burstBankButton.setOnAction(e -> handleBurstKey(KeyCode.B));
+            burstUndoButton.setOnAction(e -> handleBurstKey(KeyCode.U));
             keepAllButton.setOnAction(e -> handleBurstKey(KeyCode.A));
             leftWinButton.setFocusTraversable(false);
             rightWinButton.setFocusTraversable(false);
             skipBothButton.setFocusTraversable(false);
+            burstBankButton.setFocusTraversable(false);
+            burstUndoButton.setFocusTraversable(false);
             keepAllButton.setFocusTraversable(false);
-            HBox burstControls = new HBox(12, leftWinButton, skipBothButton, rightWinButton, keepAllButton);
+            HBox burstControls = new HBox(12, leftWinButton, skipBothButton, rightWinButton,
+                    burstBankButton, burstUndoButton, keepAllButton);
             burstControls.setAlignment(Pos.CENTER);
 
             VBox center = new VBox(10, burstFilmstripScroll, images, burstHintLabel);
@@ -1113,13 +1210,31 @@ public class Picknick extends Application {
         rootPane.setCenter(burstPane);
         bindBurstViewSizes();
         applyBurstTransforms();
-        if (burstHintLabel != null) {
-            burstHintLabel.setText("←/→ picks winner, ↓ skips both, A keeps all");
+
+        boolean kingButtonsVisible = burstKingMode;
+        if (burstBankButton != null) {
+            burstBankButton.setVisible(kingButtonsVisible);
+            burstBankButton.setManaged(kingButtonsVisible);
         }
+        if (burstUndoButton != null) {
+            burstUndoButton.setVisible(kingButtonsVisible);
+            burstUndoButton.setManaged(kingButtonsVisible);
+        }
+
+        burstPreviewCache.clear();   // drop the previous group's full-size previews
         preloadBurstImages(burstGroupFiles);
-        burstPane.setOnKeyPressed(event -> handleBurstKey(event.getCode()));
+        // Burst keys are handled by a scene-level event filter (setupSceneShortcuts) so they work
+        // regardless of which control currently has focus.
         burstPane.requestFocus();
-        showBurstPair();
+
+        if (burstKingMode) {
+            startKingBurst();
+        } else {
+            if (burstHintLabel != null) {
+                burstHintLabel.setText("←/→ picks winner, ↓ skips both, A keeps all");
+            }
+            showBurstPair();
+        }
     }
 
     private void setupBurstZoomAndPan() {
@@ -1236,10 +1351,23 @@ public class Picknick extends Application {
         updateBurstFilmstrip();
     }
 
+    private boolean isBurstKey(KeyCode code) {
+        return code == KeyCode.LEFT || code == KeyCode.RIGHT || code == KeyCode.DOWN
+                || code == KeyCode.A || code == KeyCode.B || code == KeyCode.U;
+    }
+
     private void handleBurstKey(KeyCode code) {
         if (!isBurstActive) {
             return;
         }
+        if (burstKingMode) {
+            handleKingBurstKey(code);
+        } else {
+            handleTournamentBurstKey(code);
+        }
+    }
+
+    private void handleTournamentBurstKey(KeyCode code) {
         if (burstActiveLeft == null || burstActiveRight == null) {
             showBurstPair();
             return;
@@ -1264,6 +1392,215 @@ public class Picknick extends Application {
         burstActiveLeft = null;
         burstActiveRight = null;
         showBurstPair();
+    }
+
+    // ---- King-of-the-hill burst review (deferred decisions, undoable) -------------------------
+
+    private void resetKingBurstState() {
+        burstChampion = null;
+        burstChampionEndorsed = false;
+        burstChallengerQueue.clear();
+        burstKeepers.clear();
+        burstDiscards.clear();
+        burstUndoStack.clear();
+    }
+
+    private void startKingBurst() {
+        resetKingBurstState();
+        // burstCurrentPool holds the unreviewed frames in capture order.
+        Deque<File> ordered = new ArrayDeque<>(burstCurrentPool);
+        burstChampion = ordered.poll();
+        burstChampionEndorsed = false;   // the opening champion hasn't been chosen yet
+        burstActiveRight = ordered.poll();
+        burstChallengerQueue.addAll(ordered);
+        burstActiveLeft = burstChampion;
+        showKingBurstPair();
+    }
+
+    private void handleKingBurstKey(KeyCode code) {
+        if (code == KeyCode.U) {
+            undoKingBurst();
+            return;
+        }
+        if (code == KeyCode.A) {
+            keepAllKingCandidates();
+            return;
+        }
+        File challenger = burstActiveRight;
+        if (burstChampion == null || challenger == null) {
+            // Nothing left to compare against the champion: we are done.
+            finishKingBurst();
+            return;
+        }
+
+        if (code == KeyCode.LEFT) {
+            pushKingSnapshot();
+            burstDiscards.add(challenger);          // champion stays, challenger loses
+            burstChampionEndorsed = true;           // user actively kept this champion
+            advanceKingChallenger();
+        } else if (code == KeyCode.RIGHT) {
+            pushKingSnapshot();
+            burstDiscards.add(burstChampion);       // challenger dethrones champion
+            burstChampion = challenger;
+            burstChampionEndorsed = true;           // user actively chose this frame
+            advanceKingChallenger();
+        } else if (code == KeyCode.DOWN) {
+            pushKingSnapshot();
+            burstDiscards.add(burstChampion);       // neither is wanted
+            burstDiscards.add(challenger);
+            burstChampion = burstChallengerQueue.poll();
+            burstChampionEndorsed = false;          // promoted by default, not yet judged
+            advanceKingChallenger();
+        } else if (code == KeyCode.B) {
+            pushKingSnapshot();
+            burstKeepers.add(burstChampion);        // bank a definite keeper, keep comparing the rest
+            burstChampion = challenger;
+            burstChampionEndorsed = false;          // new champion (old challenger) not yet judged
+            advanceKingChallenger();
+        } else {
+            return;
+        }
+
+        burstActiveLeft = burstChampion;
+        if (burstChampion == null || burstActiveRight == null) {
+            finishKingBurst();
+        } else {
+            showKingBurstPair();
+        }
+    }
+
+    private void advanceKingChallenger() {
+        burstActiveRight = burstChallengerQueue.poll();
+    }
+
+    private void pushKingSnapshot() {
+        burstUndoStack.push(new BurstSnapshot(burstChampion, burstChampionEndorsed,
+                burstActiveRight, burstChallengerQueue, burstKeepers, burstDiscards));
+    }
+
+    private void undoKingBurst() {
+        BurstSnapshot snapshot = burstUndoStack.poll();
+        if (snapshot == null) {
+            return;
+        }
+        burstChampion = snapshot.champion;
+        burstChampionEndorsed = snapshot.championEndorsed;
+        burstActiveRight = snapshot.challenger;
+        burstActiveLeft = burstChampion;
+        burstChallengerQueue.clear();
+        burstChallengerQueue.addAll(snapshot.queue);
+        burstKeepers.clear();
+        burstKeepers.addAll(snapshot.keepers);
+        burstDiscards.clear();
+        burstDiscards.addAll(snapshot.discards);
+        showKingBurstPair();
+    }
+
+    private void keepAllKingCandidates() {
+        if (burstChampion != null) {
+            burstKeepers.add(burstChampion);
+        }
+        if (burstActiveRight != null) {
+            burstKeepers.add(burstActiveRight);
+        }
+        burstKeepers.addAll(burstChallengerQueue);
+        burstChallengerQueue.clear();
+        burstChampion = null;
+        burstActiveRight = null;
+        finishKingBurst();
+    }
+
+    private void showKingBurstPair() {
+        if (!isBurstActive) {
+            return;
+        }
+        File previousChampion = burstLeftFile;
+        burstActiveLeft = burstChampion;
+        burstLeftFile = burstChampion;
+        burstRightFile = burstActiveRight;
+
+        if (burstChampion != null) {
+            burstLeftLabel.setText("👑 " + burstChampion.getName());
+            burstLeftTimeLabel.setText(formatCaptureTimestamp(getCaptureDate(burstChampion)));
+            // The champion usually stays put between comparisons; only redecode when it changes.
+            if (!burstChampion.equals(previousChampion)) {
+                loadBurstImage(burstChampion, burstLeftView);
+            }
+        }
+        if (burstActiveRight != null) {
+            burstRightLabel.setText(burstActiveRight.getName());
+            burstRightTimeLabel.setText(formatCaptureTimestamp(getCaptureDate(burstActiveRight)));
+            loadBurstImage(burstActiveRight, burstRightView);
+        }
+        updateBurstBorders();
+        updateBurstFilmstrip();
+        updateKingHint();
+    }
+
+    private void updateKingHint() {
+        if (burstHintLabel == null) {
+            return;
+        }
+        int remaining = burstChallengerQueue.size() + (burstActiveRight != null ? 1 : 0);
+        burstHintLabel.setText(String.format(
+                "👑 champion vs challenger  •  %d left  •  %d kept   "
+                        + "[← champ stays] [→ challenger wins] [↓ skip both] [B bank] [U undo] [A keep all]",
+                remaining, burstKeepers.size()));
+    }
+
+    private void finishKingBurst() {
+        // Keep the surviving champion only if the user actually chose it at some point. If they
+        // skipped straight through (so the "champion" is just the last frame left by default), don't
+        // keep it — the whole batch may be bad. It stays unreviewed and falls to normal review.
+        if (burstChampion != null && burstChampionEndorsed && !burstKeepers.contains(burstChampion)) {
+            burstKeepers.add(burstChampion);
+        }
+        List<File> keepers = new ArrayList<>(burstKeepers);
+        List<File> discards = new ArrayList<>(burstDiscards);
+        completedBurstGroups.add(currentBurstGroupKey);
+
+        // Stop accepting burst keystrokes while the (potentially heavy) file moves run. Both flags
+        // are false during the apply, so keys are ignored until exitBurstMode re-enables the viewer.
+        isBurstActive = false;
+
+        int total = keepers.size() + discards.size();
+        if (total == 0) {
+            resetKingBurstState();
+            exitBurstMode();
+            showImage();
+            return;
+        }
+
+        // The deferred moves copy + verify each RAW, which can take seconds for a big burst. Run them
+        // off the UI thread, and show a progress dialog for anything non-trivial so it never looks hung.
+        BurstApplyTask applyTask = new BurstApplyTask(keepers, discards);
+        Stage dialog = total >= 4 ? showMergeDialog(applyTask) : null;
+
+        applyTask.setOnSucceeded(event -> {
+            for (File moved : applyTask.getValue()) {
+                removeFromImageFiles(moved);
+            }
+            System.out.println("Burst complete. Filed " + applyTask.getValue().size() + " of " + total + ".");
+            if (dialog != null) {
+                dialog.close();
+            }
+            resetKingBurstState();
+            exitBurstMode();
+            showImage();
+        });
+        applyTask.setOnFailed(event -> {
+            if (dialog != null) {
+                dialog.close();
+            }
+            Throwable error = applyTask.getException();
+            if (error != null) {
+                showAlert("Burst Failed", error.getMessage());
+            }
+            resetKingBurstState();
+            exitBurstMode();
+            showImage();
+        });
+        new Thread(applyTask, "burst-apply").start();
     }
 
     private void promoteBurstWinner(File file) {
@@ -1362,9 +1699,23 @@ public class Picknick extends Application {
 
     private void exitBurstMode() {
         isBurstActive = false;
+        isViewerActive = true;   // we are returning to the image viewer; re-enable k/s/m
+        resetKingBurstState();
+        resetBurstState();
+        burstPreviewCache.clear();   // free the group's full-size previews
         updateTitle(null);
         rootPane.setTop(viewerToolBar);
         rootPane.setCenter(imageView);
+    }
+
+    // Manual "Exit Burst": abandon the current burst's pending decisions, mark the group done so
+    // we don't immediately re-enter it, and resume normal review on the current image.
+    private void abortBurst() {
+        if (currentBurstGroupKey != null) {
+            completedBurstGroups.add(currentBurstGroupKey);
+        }
+        exitBurstMode();
+        showImage();
     }
 
     private void resetBurstState() {
@@ -1530,8 +1881,14 @@ public class Picknick extends Application {
         if (burstLeftPane == null || burstRightPane == null) {
             return;
         }
-        burstLeftPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
-        burstRightPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
+        if (burstKingMode) {
+            // Left is always the reigning champion; mark it distinctly in green.
+            burstLeftPane.setStyle("-fx-border-color: #2f855a; -fx-border-width: 3; -fx-border-radius: 6;");
+            burstRightPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
+        } else {
+            burstLeftPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
+            burstRightPane.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 6;");
+        }
     }
 
     private void updateBurstFilmstrip() {
@@ -1561,9 +1918,11 @@ public class Picknick extends Application {
         card.setPadding(new Insets(2));
         burstFilmstripCards.put(file.getAbsolutePath(), card);
 
-        boolean isSkipped = isInSkipFolder(file) || burstSkippedNames.contains(file.getName());
+        boolean isDiscarded = isInSkipFolder(file) || burstSkippedNames.contains(file.getName())
+                || (burstKingMode && burstDiscards.contains(file));
+        boolean isKeeper = burstKingMode && burstKeepers.contains(file);
         boolean isCandidate = isInSessionRoot(file);
-        if (isSkipped) {
+        if (isDiscarded) {
             javafx.scene.effect.ColorAdjust gray = new javafx.scene.effect.ColorAdjust();
             gray.setSaturation(-1.0);
             thumb.setEffect(gray);
@@ -1573,6 +1932,8 @@ public class Picknick extends Application {
         boolean isRight = file.equals(burstRightFile);
         if (isLeft || isRight) {
             card.setStyle("-fx-border-color: #2b6cb0; -fx-border-width: 2; -fx-border-radius: 4;");
+        } else if (isKeeper) {
+            card.setStyle("-fx-border-color: #2f855a; -fx-border-width: 2; -fx-border-radius: 4;");
         } else {
             card.setStyle("-fx-border-color: transparent; -fx-border-width: 2;");
         }
@@ -1590,7 +1951,7 @@ public class Picknick extends Application {
             });
         }
 
-        if (!isLeft && !isRight && !isSkipped && isCandidate) {
+        if (!burstKingMode && !isLeft && !isRight && !isDiscarded && isCandidate) {
             HBox overlay = new HBox(4);
             overlay.setAlignment(Pos.CENTER);
             Button leftBtn = new Button("L");
@@ -1607,7 +1968,40 @@ public class Picknick extends Application {
             card.setOnMouseExited(e -> overlay.setVisible(false));
         }
 
+        if (burstKingMode && isCandidate && !isLeft) {
+            // Click any frame (even one already seen or discarded) to pull it in as the challenger.
+            card.setCursor(javafx.scene.Cursor.HAND);
+            card.setOnMouseClicked(e -> setKingChallenger(file));
+        }
+
         return card;
+    }
+
+    // Make the clicked frame the current challenger (right side), preserving the one it replaces.
+    // The champion (left) can't challenge itself. Snapshotted so it can be undone.
+    private void setKingChallenger(File file) {
+        if (!burstKingMode || !isBurstActive || file == null) {
+            return;
+        }
+        if (file.equals(burstChampion) || file.equals(burstActiveRight)) {
+            return;
+        }
+        if (!isInSessionRoot(file)) {
+            return;
+        }
+        pushKingSnapshot();
+        File currentChallenger = burstActiveRight;
+        burstChallengerQueue.remove(file);   // pull it out of wherever it currently sits
+        burstDiscards.remove(file);          // un-reject if it had been discarded
+        burstKeepers.remove(file);           // un-bank if it had been banked
+        if (currentChallenger != null && !currentChallenger.equals(file)) {
+            burstChallengerQueue.addFirst(currentChallenger);   // don't lose the one we replaced
+        }
+        burstActiveRight = file;
+        if (burstPane != null) {
+            burstPane.requestFocus();
+        }
+        showKingBurstPair();
     }
 
     private void setBurstSlot(File file, boolean leftSlot) {
@@ -1674,16 +2068,10 @@ public class Picknick extends Application {
             return;
         }
         for (File file : group) {
-            String key = file.getAbsolutePath();
-            if (sessionThumbnailCache.containsKey(key)) {
+            if (burstPreviewCache.containsKey(file.getAbsolutePath())) {
                 continue;
             }
-            thumbnailExecutor.submit(() -> {
-                Image image = loadBurstPreviewImage(file);
-                if (image != null) {
-                    sessionThumbnailCache.put(key, image);
-                }
-            });
+            thumbnailExecutor.submit(() -> loadBurstPreviewImage(file)); // caches internally
         }
     }
 
@@ -1691,12 +2079,19 @@ public class Picknick extends Application {
         if (file == null) {
             return null;
         }
+        String key = file.getAbsolutePath();
+        Image cached = burstPreviewCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
         try {
             File sourceFile = file;
             if (!isJpeg(file)) {
                 sourceFile = convertNEFToJPEG(file);
             }
-            return new Image(sourceFile.toURI().toString());
+            Image image = new Image(sourceFile.toURI().toString());
+            burstPreviewCache.put(key, image);
+            return image;
         } catch (IOException e) {
             System.out.println("Burst preview failed for " + file.getName() + ": " + e.getMessage());
         }
@@ -2042,9 +2437,6 @@ public class Picknick extends Application {
 
         for (File folder : folders) {
             SessionMetadata metadata = readSessionMetadata(folder);
-            if (metadata.totalCount == 0) {
-                metadata.totalCount = 0;
-            }
             if (metadata.archived && !includeArchived) {
                 continue;
             }
@@ -2380,6 +2772,20 @@ public class Picknick extends Application {
     }
 
     private Date getCaptureDate(File imageFile) {
+        if (imageFile == null) {
+            return null;
+        }
+        String cacheKey = imageFile.getAbsolutePath() + "|" + imageFile.lastModified() + "|" + imageFile.length();
+        Date cached = captureDateCache.get(cacheKey);
+        if (cached != null) {
+            return cached == NO_CAPTURE_DATE ? null : cached;
+        }
+        Date captureDate = readCaptureDate(imageFile);
+        captureDateCache.put(cacheKey, captureDate != null ? captureDate : NO_CAPTURE_DATE);
+        return captureDate;
+    }
+
+    private Date readCaptureDate(File imageFile) {
         try {
             Metadata metadata = ImageMetadataReader.readMetadata(imageFile);
 
@@ -2525,7 +2931,10 @@ public class Picknick extends Application {
 
         String cacheKey = computeCacheKey(nefFile);
         File cacheFile = new File(cacheDirectory, cacheKey + ".jpg");
-        File tempFile = new File(cacheDirectory, cacheKey + ".tmp");
+        // Unique temp per conversion: the same RAW may be converted concurrently (e.g. the session
+        // warm-up and the viewer preload), and a shared temp name would let them corrupt each other.
+        Path tempPath = Files.createTempFile(cacheDirectory.toPath(), cacheKey + "-", ".tmp");
+        File tempFile = tempPath.toFile();
 
         String[] command = {
                 dcrawPath,
@@ -2537,22 +2946,23 @@ public class Picknick extends Application {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectOutput(tempFile);
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-        Process process = pb.start();
 
         try {
+            Process process = pb.start();
             int exitCode = process.waitFor();
             if (exitCode != 0) {
                 throw new IOException("dcraw exited with code " + exitCode);
             }
+            try {
+                Files.move(tempPath, cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                Files.move(tempPath, cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("dcraw process was interrupted", e);
-        }
-
-        try {
-            Files.move(tempFile.toPath(), cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            Files.move(tempFile.toPath(), cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(tempPath);   // no-op if it was moved into place
         }
         return cacheFile;
     }
@@ -2604,18 +3014,14 @@ public class Picknick extends Application {
         preloadedCaptureDates.remove(fileKey);
         File tempFile = preloadedTempFiles.remove(fileKey);
         if (tempFile != null && tempFile.exists()) {
-            if (tempFile != null && tempFile.exists()) {
-                tempFile.delete();
-            }
+            tempFile.delete();
         }
     }
 
     private void clearPreloadedImages() {
         for (File tempFile : preloadedTempFiles.values()) {
             if (tempFile != null && tempFile.exists()) {
-                if (tempFile != null && tempFile.exists()) {
-                    tempFile.delete();
-                }
+                tempFile.delete();
             }
         }
         preloadedImages.clear();
@@ -2900,11 +3306,10 @@ public class Picknick extends Application {
         }
         preloadExecutor.shutdownNow();
         thumbnailExecutor.shutdownNow();
+        cacheWarmExecutor.shutdownNow();
         for (File tempFile : sessionThumbnailTempFiles) {
             if (tempFile != null && tempFile.exists()) {
-                if (tempFile != null && tempFile.exists()) {
-                    tempFile.delete();
-                }
+                tempFile.delete();
             }
         }
     }
@@ -3032,6 +3437,75 @@ public class Picknick extends Application {
         @Override
         public void reportMessage(String message) {
             updateMessage(message);
+        }
+    }
+
+    // Applies a finished king-of-the-hill burst's deferred moves off the UI thread, reporting
+    // progress. Returns the files actually moved so the caller can drop them from the viewer list.
+    private class BurstApplyTask extends Task<List<File>> implements ProgressReporter {
+        private final List<File> keepers;
+        private final List<File> discards;
+
+        private BurstApplyTask(List<File> keepers, List<File> discards) {
+            this.keepers = keepers;
+            this.discards = discards;
+        }
+
+        @Override
+        protected List<File> call() {
+            List<File> moved = new ArrayList<>();
+            int total = keepers.size() + discards.size();
+            int done = 0;
+            reportProgress(0, Math.max(1, total));
+            done = fileBurstFiles(keepers, sessionKeepDirectory, "Filing keepers", moved, done, total);
+            done = fileBurstFiles(discards, sessionSkipDirectory, "Filing rejects", moved, done, total);
+            return moved;
+        }
+
+        private int fileBurstFiles(List<File> files, File targetDir, String label,
+                                   List<File> moved, int done, int total) {
+            if (targetDir == null) {
+                return done;
+            }
+            for (File file : files) {
+                reportMessage(label + " (" + (done + 1) + "/" + total + ")");
+                if (file != null && isInSessionRoot(file) && moveToDirectory(file, targetDir)) {
+                    moved.add(file);
+                }
+                done++;
+                reportProgress(done, Math.max(1, total));
+            }
+            return done;
+        }
+
+        @Override
+        public void reportProgress(long workDone, long max) {
+            updateProgress(workDone, max);
+        }
+
+        @Override
+        public void reportMessage(String message) {
+            updateMessage(message);
+        }
+    }
+
+    // Full snapshot of king-of-the-hill state, pushed before each decision so undo can restore it.
+    private static class BurstSnapshot {
+        private final File champion;
+        private final boolean championEndorsed;
+        private final File challenger;
+        private final List<File> queue;
+        private final List<File> keepers;
+        private final List<File> discards;
+
+        private BurstSnapshot(File champion, boolean championEndorsed, File challenger, Deque<File> queue,
+                              List<File> keepers, List<File> discards) {
+            this.champion = champion;
+            this.championEndorsed = championEndorsed;
+            this.challenger = challenger;
+            this.queue = new ArrayList<>(queue);
+            this.keepers = new ArrayList<>(keepers);
+            this.discards = new ArrayList<>(discards);
         }
     }
 
